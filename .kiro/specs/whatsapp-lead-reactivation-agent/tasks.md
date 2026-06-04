@@ -23,8 +23,8 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - Define the injectable `clock` and `rng` seams used by pure timing/pacing functions and the repository interfaces (`LeadRepository`, `MessageRepository`, `ScheduledJobRepository`, `NumberRepository`, `ComplianceRepository`) referenced by services
     - _Requirements: 14.1, 19.1, 19.2_
 
-- [ ] 2. Implement phone normalization (pure core)
-  - [ ] 2.1 Implement `normalizePhone`
+- [x] 2. Implement phone normalization (pure core)
+  - [x] 2.1 Implement `normalizePhone`
     - Write the pure, Brazilian-aware `normalizePhone(raw, "BR")` that strips formatting, applies the `+55` country code when absent, validates digit count, returns E.164 or `null`, and is idempotent
     - _Requirements: 1.2_
 
