@@ -10,15 +10,15 @@ Each of the 24 correctness properties from the design is realized by exactly one
 
 ## Tasks
 
-- [ ] 1. Set up project, tooling, and core domain types
-  - [ ] 1.1 Scaffold the TypeScript/Next.js project and toolchain
+- [x] 1. Set up project, tooling, and core domain types
+  - [x] 1.1 Scaffold the TypeScript/Next.js project and toolchain
     - Initialize a Next.js (App Router) + TypeScript (Node >= 20) project with one deployable web/API app and a separate long-running worker entry point that shares domain modules
     - Add and configure dependencies: Drizzle ORM + PostgreSQL driver, pg-boss, Better Auth, `@langchain/langgraph` + `@langchain/core` + zod, Vitest, and fast-check
     - Configure Vitest (TS/ESM) and a fast-check setup that defaults each property run to a minimum of 100 iterations
     - Create the `src/core` (pure), `src/services` (I/O), `src/db` (Drizzle), `src/app` (Next.js routes/UI), and `src/worker` (pg-boss handlers) directory skeleton
     - _Requirements: 19.1_
 
-  - [ ] 1.2 Define core domain types, enums, and injectable seams
+  - [x] 1.2 Define core domain types, enums, and injectable seams
     - Define `LifecycleState`, `OptInStatus`, `Touch`, `LifecycleSnapshot`/`LeadSnapshot`, `QualificationFields`, `ScoringSignals`, `BehavioralSignals`, `AntiBanConfig`, and `NumberState` as plain-value TypeScript types
     - Define the injectable `clock` and `rng` seams used by pure timing/pacing functions and the repository interfaces (`LeadRepository`, `MessageRepository`, `ScheduledJobRepository`, `NumberRepository`, `ComplianceRepository`) referenced by services
     - _Requirements: 14.1, 19.1, 19.2_
