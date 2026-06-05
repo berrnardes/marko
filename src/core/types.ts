@@ -6,6 +6,12 @@
 // these declarations. Shapes mirror the design's Components/Interfaces and Data
 // Models sections.
 
+// `ClassificationBand` is owned by the score-band classifier (Req 12); it is
+// re-exported here so consumers of `LeadSnapshot` and the repository
+// interfaces continue to see it on the core types module.
+export type { ClassificationBand } from "./classify";
+import type { ClassificationBand } from "./classify";
+
 // ---------------------------------------------------------------------------
 // Lifecycle and lawful-basis enums
 // ---------------------------------------------------------------------------
@@ -32,12 +38,6 @@ export type OptInStatus = "opt_in" | "opt_out";
 
 /** A single scheduled outreach touch within the 5-touch cadence (Req 3). */
 export type Touch = "T1" | "T2" | "T3" | "T4" | "T5";
-
-/**
- * The score-band classification label (Req 12). `cold` is a band a Lead can
- * hold while it remains `QUALIFYING`; it is not a separate lifecycle state.
- */
-export type ClassificationBand = "hot" | "warm" | "cold" | "disqualified";
 
 /** A Lead's qualification objective (Req 9, 19.2). */
 export type Objective = "housing" | "investment";

@@ -33,8 +33,8 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - Generators must include Brazilian formats, non-numeric junk, and already-normalized E.164 values
     - **Validates: Requirements 1.2**
 
-- [ ] 3. Implement scoring and classification (pure core)
-  - [ ] 3.1 Implement `computeBaseScore` and `applyBehavioral`
+- [-] 3. Implement scoring and classification (pure core)
+  - [x] 3.1 Implement `computeBaseScore` and `applyBehavioral`
     - Write `computeBaseScore(signals)` summing only satisfied weights into 0–100, forcing 0 when `disqualifying` holds and 0 when no signal holds
     - Write `applyBehavioral(base, behavioral)` returning `min(100, base + bonuses)`
     - _Requirements: 10.1, 10.2, 10.3, 10.4, 11.2, 11.3, 11.4, 11.5_
@@ -48,7 +48,7 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - **Property 16: Behavioral additions are additive and capped at 100**
     - **Validates: Requirements 11.2, 11.3, 11.4, 11.5**
 
-  - [ ] 3.4 Implement score-band classification
+  - [x] 3.4 Implement score-band classification
     - Write the pure `classify(score)` returning `HOT` (>= 70), `WARM` (40–69), `cold` (1–39), or `DISQUALIFIED` (0) in its own module
     - _Requirements: 12.1, 12.2, 12.3, 12.4_
 
