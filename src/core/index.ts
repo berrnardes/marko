@@ -9,6 +9,7 @@
 // Pure functions (normalization, scoring, transitions, anti-ban math, etc.) are
 // added by subsequent tasks. The shared domain types, enums, and injectable
 // seams (`Clock`, `Rng`) live in `./types` and are re-exported here.
+export * from "./anti-ban";
 export * from "./classify";
 export * from "./lifecycle";
 export * from "./opt-out";

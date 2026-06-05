@@ -79,8 +79,8 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - Write the pure PT-BR opt-out phrase detector returning a boolean
     - _Requirements: 15.1_
 
-- [ ] 6. Implement anti-ban accounting (pure core)
-  - [ ] 6.1 Implement cap, ramp, pacing, and send-window math
+- [x] 6. Implement anti-ban accounting (pure core)
+  - [x] 6.1 Implement cap, ramp, pacing, and send-window math
     - Write `currentDailyCap(cfg, dayInRamp)` (monotonic warm-up ramp), `canSend(cfg, n, dayInRamp, now)` returning `allow`/`defer_cap`/`defer_window`/`blocked`, `nextDelayMs(cfg, rng)` within `[delayMin, delayMax]`, and `withinSendWindow(cfg, now)`
     - _Requirements: 16.1, 16.2, 16.3, 16.4, 16.5, 17.1, 17.4, 18.2_
 
