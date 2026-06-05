@@ -164,8 +164,8 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - **Property 20: Opt-out is detected, recorded, and immediately silences all outreach**
     - **Validates: Requirements 15.1, 15.2, 15.3, 15.4**
 
-- [ ] 14. Implement the outbound choke point (Outbound_Worker)
-  - [ ] 14.1 Implement the outbound send job and worker
+- [x] 14. Implement the outbound choke point (Outbound_Worker)
+  - [x] 14.1 Implement the outbound send job and worker
     - Implement the single send path: drop on opt-out, stop on block flag, defer outside the send window, check/increment the per-number daily counter against the current cap, wait the randomized delay, simulate typing, call `WAHA_Client.sendText`, and increment the counter while recording the message in the same transaction
     - _Requirements: 15.3, 16.2, 17.1, 17.2, 17.4, 18.2, 18.3_
 

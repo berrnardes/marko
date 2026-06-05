@@ -12,5 +12,6 @@
 export * from "./anti-ban-controller";
 export * from "./compliance-manager";
 export * from "./lifecycle-manager";
+export * from "./outbound-worker";
 export * from "./repositories";
 export * from "./waha-client";
