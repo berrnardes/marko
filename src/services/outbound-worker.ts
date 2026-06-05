@@ -85,6 +85,48 @@ export interface OutboundSendJob {
 }
 
 /**
+ * A requesting feature's intent to send a fully-rendered outbound message,
+ * handed to the {@link OutboundSendQueue} (design "Enqueue outbound send job").
+ * It carries only what a feature knows — the target lead, the rendered text,
+ * and which feature asked — but deliberately NOT the physical sending number:
+ * assigning an available number (and reassigning it when one is blocked) is an
+ * anti-ban/outbound concern resolved when the job is dequeued, not something a
+ * cadence touch, nurture message, or qualification reply decides. The queue
+ * turns this request into the {@link OutboundSendJob} the worker processes.
+ */
+export interface OutboundSendRequest {
+	/** The lead the message is for. */
+	leadId: string;
+	/** The fully-rendered message text to send. */
+	content: string;
+	/** Which feature requested the send (cadence / nurture / qualification). */
+	kind: OutboundKind;
+}
+
+/**
+ * The enqueue boundary onto the outbound choke point — the durable-queue seam
+ * the sending features depend on (the `Cadence_Worker`, the `Nurture_Worker`,
+ * and the qualification reply path). It is the enqueue counterpart to
+ * {@link OutboundWorker.process}: this puts an outbound send on the queue, and
+ * the worker later takes it off and performs the single guarded send.
+ *
+ * Injected rather than constructed inline so those features never touch pg-boss
+ * directly and stay unit-testable against a fake queue (mirroring how the
+ * cadence scheduler depends on its `CadenceJobQueue`). Production wiring (task
+ * 23.1) backs this with the real pg-boss instance — assigning an available
+ * number (via the `NumberRepository` / `Anti_Ban_Controller`) to form the
+ * {@link OutboundSendJob} the {@link OutboundWorker} processes; tests back it
+ * with an in-memory fake.
+ */
+export interface OutboundSendQueue {
+	/**
+	 * Enqueue a fully-rendered outbound send for delivery through the choke
+	 * point, returning the queue's job id.
+	 */
+	enqueueSend(request: OutboundSendRequest): Promise<string>;
+}
+
+/**
  * The outcome of processing one outbound send job — a discriminated union over
  * the choke-point decision:
  *

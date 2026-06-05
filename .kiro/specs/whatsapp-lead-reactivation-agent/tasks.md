@@ -186,8 +186,8 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - **Property 3: Created leads are deduplicated and start COLD_QUEUED with their source**
     - **Validates: Requirements 1.4, 1.5, 2.1, 2.2**
 
-- [ ] 16. Implement the Cadence_Scheduler and Cadence_Worker
-  - [ ] 16.1 Implement the `Cadence_Scheduler`
+- [x] 16. Implement the Cadence_Scheduler and Cadence_Worker
+  - [x] 16.1 Implement the `Cadence_Scheduler`
     - Implement `enroll` (transition `COLD_QUEUED` → `IN_CADENCE`, create five persisted, cancellable pg-boss touch jobs T1–T5 at their planned fire times) and `cancelAll`
     - _Requirements: 2.3, 3.1, 3.2, 3.4_
 
@@ -195,7 +195,7 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - **Property 4: Enrollment sets IN_CADENCE and creates five cancellable touches**
     - **Validates: Requirements 3.1, 3.2, 3.4**
 
-  - [ ] 16.3 Implement the `Cadence_Worker`
+  - [x] 16.3 Implement the `Cadence_Worker`
     - On each touch job, re-read fresh state + block flag, run `evaluateSendGuard` (skip and cancel remaining jobs when stopped), otherwise render the touch and enqueue an outbound send; on T5 for a non-replying lead set `CADENCE_EXHAUSTED` and trigger nurture
     - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 5.1, 6.1_
 

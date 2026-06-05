@@ -11,6 +11,7 @@
 // `./repositories` and are re-exported here.
 export * from "./anti-ban-controller";
 export * from "./cadence-scheduler";
+export * from "./cadence-worker";
 export * from "./compliance-manager";
 export * from "./lead-importer";
 export * from "./lifecycle-manager";
