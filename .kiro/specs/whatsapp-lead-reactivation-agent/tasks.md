@@ -33,7 +33,7 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - Generators must include Brazilian formats, non-numeric junk, and already-normalized E.164 values
     - **Validates: Requirements 1.2**
 
-- [-] 3. Implement scoring and classification (pure core)
+- [ ] 3. Implement scoring and classification (pure core)
   - [x] 3.1 Implement `computeBaseScore` and `applyBehavioral`
     - Write `computeBaseScore(signals)` summing only satisfied weights into 0–100, forcing 0 when `disqualifying` holds and 0 when no signal holds
     - Write `applyBehavioral(base, behavioral)` returning `min(100, base + bonuses)`
@@ -118,7 +118,7 @@ Each of the 24 correctness properties from the design is realized by exactly one
 - [ ] 8. Checkpoint - Ensure all pure-core tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [-] 9. Implement the data layer (Drizzle + PostgreSQL)
+- [ ] 9. Implement the data layer (Drizzle + PostgreSQL)
   - [x] 9.1 Define the Drizzle schema and migrations
     - Define `leads` (unique `phone_e164`, nullable qualification fields, enum-constrained `lifecycle_state`/`opt_in_status`, score, block flag), `messages`, `scheduled_jobs`, `whatsapp_numbers`, `handoff_events`, `compliance_records`, `import_reports`, and `import_rows` tables with check constraints; reserve Better Auth and `pgboss` schema ownership
     - _Requirements: 1.4, 2.2, 14.1, 19.1, 19.2, 19.3_
