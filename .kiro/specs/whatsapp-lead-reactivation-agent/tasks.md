@@ -141,8 +141,8 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - Assert typing presence is simulated before sending, and inbound messages are marked seen
     - _Requirements: 17.2, 17.3_
 
-- [ ] 11. Implement the Anti_Ban_Controller service
-  - [ ] 11.1 Implement the controller persistence wrapper
+- [x] 11. Implement the Anti_Ban_Controller service
+  - [x] 11.1 Implement the controller persistence wrapper
     - Wrap the pure accounting functions with per-number state: daily counter with date reset, current-cap lookup, set/read block flag, and stop assigning new sends to a blocked number
     - _Requirements: 16.1, 16.2, 16.5, 18.1, 18.3_
 
