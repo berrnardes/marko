@@ -173,8 +173,8 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - **Property 23: A blocked number is fully silenced**
     - **Validates: Requirements 18.2, 18.3**
 
-- [ ] 15. Implement the Lead_Importer
-  - [ ] 15.1 Implement CSV import
+- [x] 15. Implement the Lead_Importer
+  - [x] 15.1 Implement CSV import
     - Parse each row, normalize the phone (record rejected rows with row number + reason), deduplicate by normalized number (update existing, count as updated), create new leads as `COLD_QUEUED` recording the source, enroll new leads via the `Cadence_Scheduler`, and return the created/updated/rejected report
     - _Requirements: 1.1, 1.3, 1.4, 1.5, 1.6, 2.1, 2.2, 2.3_
 

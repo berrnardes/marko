@@ -10,7 +10,9 @@
 // interfaces (the persistence I/O boundary the services depend on) live in
 // `./repositories` and are re-exported here.
 export * from "./anti-ban-controller";
+export * from "./cadence-scheduler";
 export * from "./compliance-manager";
+export * from "./lead-importer";
 export * from "./lifecycle-manager";
 export * from "./outbound-worker";
 export * from "./repositories";
