@@ -155,7 +155,7 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - Wrap the pure `transition` with persistence that writes only on success, using optimistic concurrency (compare-and-set on `lifecycle_state`/`updated_at`) to preserve the single-state invariant
     - _Requirements: 14.1, 19.4_
 
-- [ ] 13. Implement the Compliance_Manager
+- [x] 13. Implement the Compliance_Manager
   - [ ] 13.1 Implement opt-out application and lawful-basis recording
     - Implement `applyOptOut` (set `opt_out`, transition to `OPTED_OUT`, cancel all scheduled outreach) and `recordLawfulBasis` (append-only compliance record with status and timestamp), guaranteeing no outbound is sent while opted out
     - _Requirements: 15.1, 15.2, 15.3, 15.4_

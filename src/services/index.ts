@@ -10,6 +10,7 @@
 // interfaces (the persistence I/O boundary the services depend on) live in
 // `./repositories` and are re-exported here.
 export * from "./anti-ban-controller";
+export * from "./compliance-manager";
 export * from "./lifecycle-manager";
 export * from "./repositories";
 export * from "./waha-client";
