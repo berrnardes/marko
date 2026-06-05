@@ -10,3 +10,4 @@
 // interfaces (the persistence I/O boundary the services depend on) live in
 // `./repositories` and are re-exported here.
 export * from "./repositories";
+export * from "./waha-client";

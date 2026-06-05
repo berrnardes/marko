@@ -132,8 +132,8 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - Drive arbitrary core fields, nullable qualification fields, and message history through a disposable PostgreSQL schema
     - **Validates: Requirements 19.1, 19.2, 19.3, 19.4**
 
-- [ ] 10. Implement the WAHA client
-  - [ ] 10.1 Implement `WahaClient`
+- [x] 10. Implement the WAHA client
+  - [x] 10.1 Implement `WahaClient`
     - Implement `resolveChatId` (BR pre-2012 number resolution + caching), `sendText`, `startTyping`/`stopTyping`, and `sendSeen` against the WAHA REST API
     - _Requirements: 17.2, 17.3, 18.2_
 
