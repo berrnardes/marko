@@ -118,12 +118,12 @@ Each of the 24 correctness properties from the design is realized by exactly one
 - [ ] 8. Checkpoint - Ensure all pure-core tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 9. Implement the data layer (Drizzle + PostgreSQL)
-  - [ ] 9.1 Define the Drizzle schema and migrations
+- [-] 9. Implement the data layer (Drizzle + PostgreSQL)
+  - [x] 9.1 Define the Drizzle schema and migrations
     - Define `leads` (unique `phone_e164`, nullable qualification fields, enum-constrained `lifecycle_state`/`opt_in_status`, score, block flag), `messages`, `scheduled_jobs`, `whatsapp_numbers`, `handoff_events`, `compliance_records`, `import_reports`, and `import_rows` tables with check constraints; reserve Better Auth and `pgboss` schema ownership
     - _Requirements: 1.4, 2.2, 14.1, 19.1, 19.2, 19.3_
 
-  - [ ] 9.2 Implement the repositories
+  - [x] 9.2 Implement the repositories
     - Implement the repository interfaces over Drizzle for leads, messages, scheduled jobs, numbers, and compliance records, persisting score/lifecycle updates
     - _Requirements: 19.4_
 
