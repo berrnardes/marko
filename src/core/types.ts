@@ -65,6 +65,35 @@ export interface QualificationFields {
 }
 
 // ---------------------------------------------------------------------------
+// Lead view (narrow input consumed by the Message_Generator templates)
+// ---------------------------------------------------------------------------
+
+/**
+ * The narrow, read-only view of a Lead consumed by the Message_Generator's
+ * pure template renderers (Req 4). It carries only what the touch and nurture
+ * templates actually read: an optional display name used to personalize the
+ * greeting, and the Lead's progressively-collected qualification data. Keeping
+ * the renderers' input this narrow means message templating depends only on the
+ * fields it uses, rather than on the full {@link LeadSnapshot}.
+ *
+ * The T1 re-opener is personalized from this collected data, so two Leads with
+ * different collected data produce different T1 text (Req 4.1, 4.7).
+ */
+export interface LeadView {
+	/**
+	 * Optional display name (e.g. the Lead's first name) used to personalize the
+	 * greeting. `null` (or blank) when unknown, in which case the templates fall
+	 * back to a name-less greeting.
+	 */
+	displayName: string | null;
+	/**
+	 * The Lead's progressively-collected qualification data (Req 9.4). The T1
+	 * re-opener and several other touches reference these fields when present.
+	 */
+	qualification: QualificationFields;
+}
+
+// ---------------------------------------------------------------------------
 // Lead snapshot (freshly-read state used by the send guard and workers)
 // ---------------------------------------------------------------------------
 

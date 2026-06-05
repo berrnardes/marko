@@ -98,8 +98,8 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - Assert the cap equals the configured initial range on day 0 of the ramp
     - _Requirements: 16.4_
 
-- [ ] 7. Implement cadence/nurture timing and message templates (pure core)
-  - [ ] 7.1 Implement `plannedFireTime` and `nextNurtureDate`
+- [x] 7. Implement cadence/nurture timing and message templates (pure core)
+  - [x] 7.1 Implement `plannedFireTime` and `nextNurtureDate`
     - Write the pure `plannedFireTime(touch, enrolledAt)` mapping T1→day 0, T2→day 3, T3→day 7, T4→day 11, T5→day 14–15, and `nextNurtureDate(from)` computing exactly one calendar month later with month-length edges handled
     - _Requirements: 3.3, 6.3_
 
@@ -107,7 +107,7 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - **Property 5: Cadence fire times follow the fixed offsets and are strictly increasing**
     - **Validates: Requirements 3.3**
 
-  - [ ] 7.3 Implement the `Message_Generator`
+  - [x] 7.3 Implement the `Message_Generator`
     - Write pure `renderTouch(touch, lead)` for T1–T5 (T1 personalized from the lead's collected data) and `renderNurture(lead)`
     - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.7_
 
