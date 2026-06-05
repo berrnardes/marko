@@ -150,8 +150,8 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - Assert detecting a block sets the number's block flag
     - _Requirements: 18.1_
 
-- [ ] 12. Implement the Lifecycle_Manager service
-  - [ ] 12.1 Implement `LifecycleManager.apply`
+- [x] 12. Implement the Lifecycle_Manager service
+  - [x] 12.1 Implement `LifecycleManager.apply`
     - Wrap the pure `transition` with persistence that writes only on success, using optimistic concurrency (compare-and-set on `lifecycle_state`/`updated_at`) to preserve the single-state invariant
     - _Requirements: 14.1, 19.4_
 
