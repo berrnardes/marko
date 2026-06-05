@@ -10,6 +10,7 @@
 // added by subsequent tasks. The shared domain types, enums, and injectable
 // seams (`Clock`, `Rng`) live in `./types` and are re-exported here.
 export * from "./classify";
+export * from "./lifecycle";
 export * from "./phone";
 export * from "./scoring";
 export * from "./types";

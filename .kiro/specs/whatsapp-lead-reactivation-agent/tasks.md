@@ -57,8 +57,8 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - Generators must include score boundaries 0/1/39/40/69/70/100
     - **Validates: Requirements 12.1, 12.2, 12.3, 12.4**
 
-- [ ] 4. Implement the lifecycle transition table (pure core)
-  - [ ] 4.1 Implement the `transition` function and transition table
+- [x] 4. Implement the lifecycle transition table (pure core)
+  - [x] 4.1 Implement the `transition` function and transition table
     - Encode the transition table as the single source of truth; `transition(from, to)` returns success only for defined pairs, permits `OPTED_OUT` from every non-terminal state, rejects any transition out of `OPTED_OUT`, and leaves state unchanged on rejection
     - _Requirements: 14.1, 14.2, 14.3, 14.4, 14.5_
 
