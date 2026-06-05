@@ -11,6 +11,8 @@
 // seams (`Clock`, `Rng`) live in `./types` and are re-exported here.
 export * from "./classify";
 export * from "./lifecycle";
+export * from "./opt-out";
 export * from "./phone";
 export * from "./scoring";
+export * from "./send-guard";
 export * from "./types";

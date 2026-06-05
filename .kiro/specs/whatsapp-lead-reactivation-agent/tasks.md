@@ -66,8 +66,8 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - **Property 19: Lifecycle transitions are valid exactly when defined, and OPTED_OUT is terminal**
     - **Validates: Requirements 14.1, 14.2, 14.3, 14.4, 14.5**
 
-- [ ] 5. Implement the send guard and opt-out detection (pure core)
-  - [ ] 5.1 Implement `evaluateSendGuard`
+- [x] 5. Implement the send guard and opt-out detection (pure core)
+  - [x] 5.1 Implement `evaluateSendGuard`
     - Write the pure predicate returning `skip_and_cancel` for states `REPLIED`/`QUALIFYING`/`HOT`/`WARM`/`DISQUALIFIED`/`OPTED_OUT`, when the block flag is set, or when `Opt_In_Status` is `opt_out`; otherwise `send`
     - _Requirements: 4.6, 5.2, 5.3, 5.4_
 
@@ -75,7 +75,7 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - **Property 7: Send guard stops outreach exactly on the defined stop conditions**
     - **Validates: Requirements 4.6, 5.2, 5.3, 5.4**
 
-  - [ ] 5.3 Implement `detectOptOut`
+  - [x] 5.3 Implement `detectOptOut`
     - Write the pure PT-BR opt-out phrase detector returning a boolean
     - _Requirements: 15.1_
 
