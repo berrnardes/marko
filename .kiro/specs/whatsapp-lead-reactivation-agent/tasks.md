@@ -221,7 +221,7 @@ Each of the 24 correctness properties from the design is realized by exactly one
 - [ ] 19. Checkpoint - Ensure all service-layer tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 20. Implement the Qualification_Agent (LangGraph)
+- [x] 20. Implement the Qualification_Agent (LangGraph)
   - [x] 20.1 Implement zod schemas, turn state, and graph scaffolding
     - Define `ExtractedFieldsSchema`, `AgentOutputSchema`, and `TurnState`; scaffold `buildQualificationGraph(deps)` with an injectable `BaseChatModel` and the `QualificationAgent` interface boundary
     - _Requirements: 8.1, 9.2_
@@ -258,7 +258,7 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - **Property 12: Outbound replies never assert unsupported facts or exceed one question**
     - **Validates: Requirements 8.4, 8.6**
 
-  - [ ] 20.10 Compile the graph and implement `nextTurn`
+  - [x] 20.10 Compile the graph and implement `nextTurn`
     - Wire the nodes and conditional edges into the compiled graph behind `QualificationAgent.nextTurn`, beginning a new `QUALIFYING` lead with a single re-engagement question
     - _Requirements: 8.1, 9.1_
 

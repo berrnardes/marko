@@ -14,21 +14,46 @@
 // The chat model is the only LLM seam and is injected so the provider is
 // swappable and mockable in tests.
 //
-// This module is the SCAFFOLDING for the qualification turn (task 20.1): the
-// zod schemas, inferred types, the threaded `TurnState`, the mockable
-// `QualificationAgent` boundary, and the `buildQualificationGraph(deps)`
-// factory skeleton. The individual graph nodes (`extract_fields`,
-// `persist_fields`, `select_next_question`, `score_and_classify`,
-// `detect_triggers`, `generate_reply`, `guard`, `handoff`) are wired in later
-// tasks (20.2+); until then the compiled graph is not yet assembled.
+// This module now assembles the full compiled qualification turn (task 20.10):
+// the zod schemas, inferred types, the threaded `TurnState`, the per-node
+// factories (`extract_fields`, `persist_fields`, `score_and_classify`,
+// `select_next_question`, `generate_reply`, `detect_triggers`, `guard`,
+// `handoff`, `enqueue_reply`), and `buildQualificationGraph(deps)` which wires
+// them into a compiled `@langchain/langgraph` StateGraph behind
+// `QualificationAgent.nextTurn`.
+//
+// Node-ordering reconciliation (design.md mermaid vs the data model): the
+// design mermaid draws `detect_triggers` BETWEEN `score_and_classify` and
+// `select_next_question`, yet the design's own `AgentOutputSchema` makes
+// `detectedFrustration` and `outOfDataRequest` OUTPUTS of `generate_reply`
+// (Req 8.3, 8.5), and Property 11 ties the triggers to "the agent graph output"
+// — i.e. the `generate_reply` candidate. A graph that ran `detect_triggers`
+// before `generate_reply` would read frustration/out-of-data flags off a
+// `candidate` that does not yet exist. We therefore reconcile by running
+// `detect_triggers` immediately AFTER `generate_reply` (so it reads the real
+// candidate flags + the recomputed score) and routing its handoff edge before
+// the `guard`/`enqueue_reply` finalization. This preserves every per-requirement
+// behavior — frustration → handoff (Req 8.5), out-of-data → handoff with the
+// reply short-circuited (Req 8.3), `score >= 70` → handoff (Req 13.1), and no
+// automated reply on any handoff (Req 13.4) — while keeping the candidate flags
+// well-defined at the point they are read.
 
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import { z } from "zod";
 
-import type { ClassificationBand, QualificationFields } from "@/core/types";
+import type {
+	ClassificationBand,
+	HandoffReason,
+	QualificationFields,
+} from "@/core/types";
 import type { HandoffManager } from "@/services/handoff-manager";
-import type { LifecycleManager } from "@/services/lifecycle-manager";
+import {
+	UnknownLeadError,
+	type LifecycleManager,
+} from "@/services/lifecycle-manager";
+import type { OutboundSendQueue } from "@/services/outbound-worker";
 import type {
 	LeadRepository,
 	QualificationFieldsPatch,
@@ -185,6 +210,14 @@ export interface QualificationGraphDeps {
 	lifecycle: LifecycleManager;
 	/** Hands a hot/frustrated/out-of-data Lead off to a consultant (Req 13). */
 	handoff: HandoffManager;
+	/**
+	 * Enqueue boundary onto the outbound choke point (design "Outbound choke
+	 * point"). A guarded qualification reply is enqueued as a `qualification`
+	 * outbound send job rather than sent inline, so the per-number anti-ban
+	 * invariants are enforced in the single `Outbound_Worker` path. Reuses the
+	 * same {@link OutboundSendQueue} seam the cadence/nurture workers depend on.
+	 */
+	outbound: OutboundSendQueue;
 }
 
 // ---------------------------------------------------------------------------
@@ -472,10 +505,15 @@ export function detectHandoffReason(
 
 /**
  * The destination a conditional edge routes to after `detect_triggers`: either
- * the `handoff` node (a trigger fired) or the `select_next_question` node (the
- * turn continues down the reply path).
+ * the `handoff` node (a trigger fired) or the `guard` node (the turn continues
+ * down the reply-finalization path).
+ *
+ * Per the node-ordering reconciliation (see the module header), `detect_triggers`
+ * runs AFTER `generate_reply`, so the "continue" branch routes to `guard` — which
+ * repairs/rejects the already-produced candidate before `enqueue_reply` sends it
+ * — rather than back to `select_next_question`.
  */
-export type DetectTriggersRoute = "handoff" | "select_next_question";
+export type DetectTriggersRoute = "handoff" | "guard";
 
 /**
  * Routing function for the conditional edge leaving `detect_triggers`
@@ -483,17 +521,17 @@ export type DetectTriggersRoute = "handoff" | "select_next_question";
  *
  * Routes to the `handoff` node when a trigger fired this turn — short-circuiting
  * the reply path so no automated message is sent to a frustrated, out-of-data,
- * or hot Lead (Req 8.3, 8.5, 13.1, 13.4) — and otherwise to
- * `select_next_question` to continue building the guarded reply. Pure: derived
- * solely from the {@link TurnState.handoffReason} set by `detect_triggers`.
+ * or hot Lead (Req 8.3, 8.5, 13.1, 13.4) — and otherwise to `guard` to finalize
+ * and enqueue the candidate reply. Pure: derived solely from the
+ * {@link TurnState.handoffReason} set by `detect_triggers`.
  *
  * @param state - The turn state carrying the detected `handoffReason`.
- * @returns The next node: `"handoff"` when a trigger fired, else `"select_next_question"`.
+ * @returns The next node: `"handoff"` when a trigger fired, else `"guard"`.
  */
 export function routeAfterDetectTriggers(
 	state: Pick<TurnState, "handoffReason">,
 ): DetectTriggersRoute {
-	return state.handoffReason !== null ? "handoff" : "select_next_question";
+	return state.handoffReason !== null ? "handoff" : "guard";
 }
 
 /**
@@ -795,16 +833,139 @@ export function createGuardNode(): (
 	};
 }
 
+// ---------------------------------------------------------------------------
+// Graph node: handoff (Req 13.1–13.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Create the `handoff` graph node (Req 13.1–13.4).
+ *
+ * Reached only on the conditional edge from `detect_triggers` when a trigger
+ * fired this turn (see {@link routeAfterDetectTriggers}). The node invokes the
+ * injected {@link HandoffManager.handoff} with the triggering
+ * {@link TurnState.handoffReason} — which moves the Lead to `HOT`, records the
+ * handoff event, and cancels the Lead's pending outreach (Req 13.1–13.4) — and
+ * then terminates the turn WITHOUT producing or enqueuing any reply, so the
+ * reply path is short-circuited for a frustrated, out-of-data, or hot Lead
+ * (Req 8.3, 8.5, 13.4). It performs no model call.
+ *
+ * The non-null narrowing is sound: this node is only entered when
+ * `handoffReason !== null`, and the non-null subset of
+ * {@link TurnState.handoffReason} is exactly {@link HandoffReason}. The guard is
+ * kept defensively so a direct call with a null reason is a harmless no-op.
+ *
+ * @param handoff - The injected hot-lead handoff boundary (Req 13).
+ * @returns A node that performs the handoff and threads no state change.
+ */
+export function createHandoffNode(
+	handoff: HandoffManager,
+): (
+	state: Pick<TurnState, "leadId" | "handoffReason">,
+) => Promise<Partial<TurnState>> {
+	return async function handoffNode(
+		state: Pick<TurnState, "leadId" | "handoffReason">,
+	): Promise<Partial<TurnState>> {
+		if (state.handoffReason !== null) {
+			await handoff.handoff(state.leadId, state.handoffReason as HandoffReason);
+		}
+		return {};
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Graph node: enqueue_reply (Req 8.1; design "Outbound choke point")
+// ---------------------------------------------------------------------------
+
+/**
+ * Create the `enqueue_reply` graph node (Req 8.1; design "Outbound choke
+ * point").
+ *
+ * The terminal node of the reply-finalization path: it enqueues the guarded
+ * {@link TurnState.candidate} reply as a `qualification` outbound send job
+ * through the injected {@link OutboundSendQueue}, so the message flows through
+ * the single `Outbound_Worker` choke point rather than being sent inline (the
+ * per-number anti-ban invariants are enforced there). Because this node is only
+ * reached on the non-handoff branch of `detect_triggers`, no reply is ever
+ * enqueued when a handoff fires (Req 13.4).
+ *
+ * A reply the `guard` node REJECTED is blanked to an empty string (Req 8.6); in
+ * that case nothing is enqueued, so an unsupported-fact reply is never sent. A
+ * non-empty reply — including the all-fields-collected acknowledgement that
+ * carries no question — is enqueued verbatim.
+ *
+ * @param outbound - The enqueue boundary onto the outbound choke point.
+ * @returns A node that enqueues the guarded reply and threads no state change.
+ */
+export function createEnqueueReplyNode(
+	outbound: OutboundSendQueue,
+): (
+	state: Pick<TurnState, "leadId" | "candidate">,
+) => Promise<Partial<TurnState>> {
+	return async function enqueueReply(
+		state: Pick<TurnState, "leadId" | "candidate">,
+	): Promise<Partial<TurnState>> {
+		if (state.candidate.reply.trim().length > 0) {
+			await outbound.enqueueSend({
+				leadId: state.leadId,
+				content: state.candidate.reply,
+				kind: "qualification",
+			});
+		}
+		return {};
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Compiled graph state channels and assembly
+// ---------------------------------------------------------------------------
+
+/**
+ * The LangGraph state channels for the qualification turn, one per
+ * {@link TurnState} field. Each channel uses the default last-value reducer, so
+ * a node that returns a field overwrites it for downstream nodes (e.g.
+ * `persist_fields` overwrites {@link TurnState.currentFields} with the
+ * freshly-written snapshot). The inferred state value is structurally identical
+ * to {@link TurnState}, so the per-node factories' `Pick<TurnState, …>` inputs
+ * and updates type-check against the graph.
+ */
+const QualificationStateAnnotation = Annotation.Root({
+	leadId: Annotation<string>(),
+	inboundText: Annotation<string>(),
+	currentFields: Annotation<QualificationFields>(),
+	extracted: Annotation<ExtractedFields>(),
+	score: Annotation<number>(),
+	band: Annotation<ClassificationBand>(),
+	nextField: Annotation<keyof QualificationFields | null>(),
+	candidate: Annotation<AgentOutput>(),
+	handoffReason: Annotation<TurnState["handoffReason"]>(),
+});
+
 /**
  * Build the compiled qualification-turn graph behind the {@link QualificationAgent}
- * boundary (Req 8.1, 9.2).
+ * boundary (Req 8.1, 9.1).
  *
- * SCAFFOLDING (task 20.1): this factory establishes the dependency seam and the
- * returned boundary. The individual graph nodes (`extract_fields`,
- * `persist_fields`, `select_next_question`, `score_and_classify`,
- * `detect_triggers`, `generate_reply`, `guard`, `handoff`) and their conditional
- * edges are wired in later tasks (20.2+); until then {@link QualificationAgent.nextTurn}
- * is a not-yet-implemented placeholder.
+ * Wires the per-node factories into a compiled `@langchain/langgraph`
+ * `StateGraph` over {@link QualificationStateAnnotation}. The reconciled node
+ * ordering (see the module header) is:
+ *
+ * ```text
+ *   START → extract_fields → persist_fields → score_and_classify
+ *         → select_next_question → generate_reply → detect_triggers
+ *   detect_triggers ─ handoff ─→ handoff → END        (a trigger fired)
+ *   detect_triggers ─ guard ───→ guard → enqueue_reply → END   (continue)
+ * ```
+ *
+ * `detect_triggers` runs after `generate_reply` so it reads the real candidate
+ * frustration/out-of-data flags (Req 8.3, 8.5) alongside the recomputed score
+ * (Req 13.1); its conditional edge either short-circuits to `handoff` (no
+ * automated reply, Req 13.4) or continues to `guard` → `enqueue_reply`, which
+ * places the guarded reply on the outbound choke point.
+ *
+ * Re-engagement opener (Req 9.1, 8.1): when a NEW Lead enters `QUALIFYING` its
+ * qualification fields are all `null`, so `select_next_question` picks the first
+ * unfilled field and `generate_reply` (constrained by the persona prompt and the
+ * one-question `guard`) asks about exactly that single field — a single
+ * re-engagement question rather than the whole questionnaire at once.
  *
  * @param deps - Injectable chat model and persistence/orchestration boundaries.
  * @returns A {@link QualificationAgent} hiding the compiled graph.
@@ -812,13 +973,53 @@ export function createGuardNode(): (
 export function buildQualificationGraph(
 	deps: QualificationGraphDeps,
 ): QualificationAgent {
-	// The graph nodes are assembled against these dependencies in tasks 20.2+.
-	void deps;
+	const compiled = new StateGraph(QualificationStateAnnotation)
+		.addNode("extract_fields", createExtractFieldsNode(deps.model))
+		.addNode("persist_fields", createPersistFieldsNode(deps.leads))
+		.addNode("score_and_classify", createScoreAndClassifyNode(deps.scoring))
+		.addNode("select_next_question", createSelectNextQuestionNode())
+		.addNode("generate_reply", createGenerateReplyNode(deps.model))
+		.addNode("detect_triggers", createDetectTriggersNode())
+		.addNode("handoff", createHandoffNode(deps.handoff))
+		.addNode("guard", createGuardNode())
+		.addNode("enqueue_reply", createEnqueueReplyNode(deps.outbound))
+		.addEdge(START, "extract_fields")
+		.addEdge("extract_fields", "persist_fields")
+		.addEdge("persist_fields", "score_and_classify")
+		.addEdge("score_and_classify", "select_next_question")
+		.addEdge("select_next_question", "generate_reply")
+		.addEdge("generate_reply", "detect_triggers")
+		.addConditionalEdges("detect_triggers", routeAfterDetectTriggers, {
+			handoff: "handoff",
+			guard: "guard",
+		})
+		.addEdge("handoff", END)
+		.addEdge("guard", "enqueue_reply")
+		.addEdge("enqueue_reply", END)
+		.compile();
+
 	return {
-		async nextTurn(): Promise<void> {
-			throw new Error(
-				"buildQualificationGraph: qualification graph nodes are not yet implemented (tasks 20.2+)",
-			);
+		async nextTurn(leadId: string, inbound: InboundMessage): Promise<void> {
+			// Load the Lead's already-known qualification fields so progressive
+			// extraction never re-asks what is already collected and so `guard`
+			// has the available data to honesty-check the reply against (Req 9.3,
+			// 8.6). A missing Lead is a hard error — a turn cannot run without one.
+			const lead = await deps.leads.findById(leadId);
+			if (!lead) {
+				throw new UnknownLeadError(leadId);
+			}
+
+			// Seed the turn state with the inbound text and the Lead's current
+			// fields; every other channel is populated by the nodes in order
+			// before it is read. The compiled graph performs the extraction,
+			// persistence, scoring, trigger detection, guarding, and either the
+			// handoff or the outbound enqueue as its terminal step (Req 8, 9, 11,
+			// 12, 13).
+			await compiled.invoke({
+				leadId,
+				inboundText: inbound.text,
+				currentFields: lead.qualification,
+			});
 		},
 	};
 }
