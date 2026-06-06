@@ -23,12 +23,16 @@
 // tasks (20.2+); until then the compiled graph is not yet assembled.
 
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { z } from "zod";
 
 import type { ClassificationBand, QualificationFields } from "@/core/types";
 import type { HandoffManager } from "@/services/handoff-manager";
 import type { LifecycleManager } from "@/services/lifecycle-manager";
-import type { LeadRepository } from "@/services/repositories";
+import type {
+	LeadRepository,
+	QualificationFieldsPatch,
+} from "@/services/repositories";
 
 // ---------------------------------------------------------------------------
 // Structured-output schemas (zod)
@@ -176,6 +180,132 @@ export interface QualificationGraphDeps {
 	lifecycle: LifecycleManager;
 	/** Hands a hot/frustrated/out-of-data Lead off to a consultant (Req 13). */
 	handoff: HandoffManager;
+}
+
+// ---------------------------------------------------------------------------
+// Graph node: extract_fields (Req 9.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * The system prompt that frames the structured-output extraction: capture only
+ * what the Lead actually volunteered this turn, leaving every other field
+ * omitted/null so a partial extraction never overwrites already-known data
+ * (Req 9.2, 9.4).
+ */
+const EXTRACT_FIELDS_SYSTEM_PROMPT =
+	"You extract consórcio qualification fields a lead volunteers in a WhatsApp message. " +
+	"Return only fields the lead actually stated in THIS message; leave every field the " +
+	"lead did not mention as null. Never guess or infer values that were not stated.";
+
+/**
+ * Build the prompt messages for the {@link createExtractFieldsNode} structured
+ * extraction. The already-known fields are supplied as context so the model can
+ * focus on what is newly volunteered, but the schema still permits omitting any
+ * field the Lead did not mention this turn (Req 9.2).
+ */
+function buildExtractFieldsMessages(
+	state: Pick<TurnState, "inboundText" | "currentFields">,
+): [SystemMessage, HumanMessage] {
+	const known = JSON.stringify(state.currentFields);
+	return [
+		new SystemMessage(EXTRACT_FIELDS_SYSTEM_PROMPT),
+		new HumanMessage(
+			`Already-known fields (do not repeat unless restated): ${known}\n` +
+				`Lead message: ${state.inboundText}`,
+		),
+	];
+}
+
+/**
+ * Create the `extract_fields` graph node (Req 9.2).
+ *
+ * The node performs a `model.withStructuredOutput(ExtractedFieldsSchema)` call
+ * to capture every qualification field the Lead volunteered this turn, filling
+ * {@link TurnState.extracted}. Fields the Lead did not mention are omitted/null
+ * by the schema so downstream {@link createPersistFieldsNode} never clears an
+ * already-known value (Req 9.2, 9.4).
+ *
+ * @param model - The injectable LangChain.js chat model (a fake in tests).
+ * @returns A node mapping a {@link TurnState} to the `extracted` field update.
+ */
+export function createExtractFieldsNode(
+	model: BaseChatModel,
+): (
+	state: Pick<TurnState, "inboundText" | "currentFields">,
+) => Promise<Pick<TurnState, "extracted">> {
+	const structuredModel = model.withStructuredOutput(ExtractedFieldsSchema, {
+		name: "extract_fields",
+	});
+	return async function extractFields(
+		state: Pick<TurnState, "inboundText" | "currentFields">,
+	): Promise<Pick<TurnState, "extracted">> {
+		const extracted = (await structuredModel.invoke(
+			buildExtractFieldsMessages(state),
+		)) as ExtractedFields;
+		return { extracted };
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Graph node: persist_fields (Req 9.4, 9.5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Reduce a turn's {@link ExtractedFields} to a {@link QualificationFieldsPatch}
+ * that progressively persists only the values the Lead actually volunteered
+ * (Req 9.5). A field whose extracted value is `null`/`undefined` (the Lead did
+ * not mention it this turn) is omitted from the patch, so the repository leaves
+ * any already-set value intact and never clears it (Req 9.4). Boolean `false`
+ * and numeric `0` are real volunteered values and are therefore preserved.
+ *
+ * @param extracted - The fields captured by `extract_fields` this turn.
+ * @returns A patch containing only the provided (non-nullish) field values.
+ */
+export function buildQualificationPatch(
+	extracted: ExtractedFields,
+): QualificationFieldsPatch {
+	const patch: QualificationFieldsPatch = {};
+	if (extracted.segment != null) patch.segment = extracted.segment;
+	if (extracted.creditValue != null) patch.creditValue = extracted.creditValue;
+	if (extracted.objective != null) patch.objective = extracted.objective;
+	if (extracted.hasLanceReserve != null) {
+		patch.hasLanceReserve = extracted.hasLanceReserve;
+	}
+	if (extracted.income != null) patch.income = extracted.income;
+	return patch;
+}
+
+/**
+ * Create the `persist_fields` graph node (Req 9.4, 9.5).
+ *
+ * The node writes the values volunteered this turn onto the Lead progressively
+ * via the injected {@link LeadRepository.updateQualification}, building the
+ * patch with {@link buildQualificationPatch} so an extraction that omits a
+ * field never clears an already-set value (Req 9.4). When nothing was
+ * volunteered the node makes no write and threads the unchanged fields forward.
+ * The persisted snapshot's qualification is threaded back into
+ * {@link TurnState.currentFields} so later nodes observe the freshly-written
+ * values (Req 9.5).
+ *
+ * @param leads - The persistence boundary for progressive field writes.
+ * @returns A node mapping a {@link TurnState} to the `currentFields` update.
+ */
+export function createPersistFieldsNode(
+	leads: LeadRepository,
+): (
+	state: Pick<TurnState, "leadId" | "currentFields" | "extracted">,
+) => Promise<Pick<TurnState, "currentFields">> {
+	return async function persistFields(
+		state: Pick<TurnState, "leadId" | "currentFields" | "extracted">,
+	): Promise<Pick<TurnState, "currentFields">> {
+		const patch = buildQualificationPatch(state.extracted);
+		if (Object.keys(patch).length === 0) {
+			// Nothing volunteered this turn: leave every stored field intact.
+			return { currentFields: state.currentFields };
+		}
+		const updated = await leads.updateQualification(state.leadId, patch);
+		return { currentFields: updated.qualification };
+	};
 }
 
 /**

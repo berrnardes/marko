@@ -226,7 +226,7 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - Define `ExtractedFieldsSchema`, `AgentOutputSchema`, and `TurnState`; scaffold `buildQualificationGraph(deps)` with an injectable `BaseChatModel` and the `QualificationAgent` interface boundary
     - _Requirements: 8.1, 9.2_
 
-  - [ ] 20.2 Implement the `extract_fields` and `persist_fields` nodes
+  - [x] 20.2 Implement the `extract_fields` and `persist_fields` nodes
     - `extract_fields` performs a `model.withStructuredOutput(ExtractedFieldsSchema)` call; `persist_fields` writes provided values progressively and never clears an already-set field omitted by a later extraction
     - _Requirements: 9.2, 9.4, 9.5_
 
