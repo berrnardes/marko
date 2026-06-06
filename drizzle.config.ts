@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { defineConfig } from "drizzle-kit";
 
 // Drizzle Kit configuration for schema generation and migrations.
@@ -11,6 +12,8 @@ export default defineConfig({
 	schema: ["./src/db/schema.ts", "./src/db/auth-schema.ts"],
 	out: "./src/db/migrations",
 	dbCredentials: {
-		url: process.env.DATABASE_URL ?? "postgres://postgres:uc2xwqob:5432/marko",
+		url:
+			process.env.DATABASE_URL ??
+			"postgres://postgres:uc2xwqob@localhost:5432/marko",
 	},
 });
