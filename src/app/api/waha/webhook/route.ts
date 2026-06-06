@@ -22,6 +22,7 @@ import {
 	WAHA_HMAC_HEADER,
 	type WahaWebhookDeps,
 } from "@/services";
+import { getRuntime } from "@/services/runtime";
 
 /**
  * Force the Node.js runtime: signature verification uses `node:crypto`
@@ -77,21 +78,23 @@ export function requireWebhookSecret(): string {
 }
 
 /**
- * Default production dependency provider. The Drizzle-backed
+ * Default production dependency provider (task 23.1). Resolves the shared
+ * runtime (`@/services/runtime`) for the Drizzle-backed
  * `LeadRepository`/`MessageRepository` and the pg-boss-backed
- * {@link import("@/services").InboundProcessingQueue} are wired here in task
- * 23.1 (the worker/web composition root). Until then it throws a descriptive
- * error so the route never silently no-ops; the HMAC secret is already sourced
- * from the environment so that part is live.
+ * {@link import("@/services").InboundProcessingQueue}, and reads the HMAC secret
+ * from the environment. The webhook therefore verifies, persists, and enqueues
+ * inbound deliveries durably; the heavy Inbound_Handler pipeline runs off the
+ * inbound queue.
  */
-function defaultWebhookDepsProvider(): WahaWebhookDeps {
-	// Validate the secret eagerly so misconfiguration surfaces here.
-	requireWebhookSecret();
-	throw new Error(
-		"Inbound webhook dependencies are not wired yet; the Drizzle repositories " +
-			"and the pg-boss inbound queue are registered in task 23.1. " +
-			"Tests inject fakes via setWebhookDepsProvider().",
-	);
+async function defaultWebhookDepsProvider(): Promise<WahaWebhookDeps> {
+	const secret = requireWebhookSecret();
+	const runtime = await getRuntime();
+	return {
+		secret,
+		leads: runtime.leads,
+		messages: runtime.messages,
+		queue: runtime.inboundQueue,
+	};
 }
 
 /**

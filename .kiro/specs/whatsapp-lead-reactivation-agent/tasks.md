@@ -304,8 +304,8 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - Test rendering of the lead list, lead detail, import report, and handoff view
     - _Requirements: 20.1, 20.2, 20.3, 20.4_
 
-- [ ] 23. Wire entry points and integrate the system
-  - [ ] 23.1 Wire the worker and web entry points
+- [x] 23. Wire entry points and integrate the system
+  - [x] 23.1 Wire the worker and web entry points
     - Register the pg-boss handlers (cadence, nurture, outbound) on the worker process and wire the importer endpoint, webhook route, and enrollment path into the Next.js app so external sources enroll through the same process
     - _Requirements: 2.3, 3.1, 16.2, 18.3_
 

@@ -91,7 +91,7 @@ function MessageBubble({ message }: { message: MessageView }) {
 					inbound ? "bg-surface text-ink" : "bg-primary text-surface"
 				}`}
 			>
-				<p className="whitespace-pre-wrap break-words">{message.content}</p>
+				<p className="whitespace-pre-wrap wrap-break-word">{message.content}</p>
 				<p
 					className={`mt-1 text-[11px] ${
 						inbound ? "text-ink/40" : "text-surface/60"

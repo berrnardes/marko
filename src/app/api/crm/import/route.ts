@@ -49,7 +49,8 @@ export async function POST(request: Request): Promise<NextResponse> {
 			: DEFAULT_SOURCE;
 
 	const csv = Buffer.from(await file.arrayBuffer());
-	const report = await createCrmImporter().import(csv, source);
+	const importer = await createCrmImporter();
+	const report = await importer.import(csv, source);
 
 	return NextResponse.json({ report });
 }
