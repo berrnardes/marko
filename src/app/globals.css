@@ -1,26 +1,37 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
+/*
+ * Marko CRM brand design tokens (task 22.3).
+ *
+ * Exposes the brand palette and type scale to Tailwind v4 as theme tokens, so
+ * utilities such as `bg-primary`, `text-accent`, `border-surface`, and
+ * `font-display` are available throughout the CRM_UI. `@theme inline` keeps the
+ * font tokens pointing at the `next/font` CSS variables wired up in the root
+ * layout (`--font-hanken`, `--font-fraunces`) rather than resolving them at
+ * build time.
+ *
+ * Palette: primary #163D2C, accent #E2922E, secondary #C2603A, ink #212121,
+ * surface #F0EEE9. Main font "Hanken Grotesque" (applied globally); secondary
+ * "Fraunces" reserved for display headings.
+ */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+	--color-primary: #163d2c;
+	--color-accent: #e2922e;
+	--color-secondary: #c2603a;
+	--color-ink: #212121;
+	--color-surface: #f0eee9;
+	--color-surface-card: #ffffff;
+
+	--font-sans: var(--font-hanken), ui-sans-serif, system-ui, sans-serif;
+	--font-display: var(--font-fraunces), ui-serif, Georgia, serif;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+	color-scheme: light;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+	background-color: var(--color-surface);
+	color: var(--color-ink);
+	font-family: var(--font-sans);
 }

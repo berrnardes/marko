@@ -287,8 +287,8 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - Test HMAC verification (reject invalid/missing signatures) and idempotent handling of duplicate deliveries
     - _Requirements: 7.1, 7.4_
 
-- [ ] 22. Implement authentication and the CRM UI
-  - [ ] 22.1 Implement Better Auth and route protection
+- [x] 22. Implement authentication and the CRM UI
+  - [x] 22.1 Implement Better Auth and route protection
     - Configure Better Auth with its Drizzle adapter and guard every CRM_UI page and data endpoint, redirecting unauthenticated or expired sessions to authentication
     - _Requirements: 21.1, 21.2, 21.3_
 
@@ -296,7 +296,7 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - Assert unauthenticated/expired access is denied and authenticated access is granted
     - _Requirements: 21.1, 21.2, 21.3_
 
-  - [ ] 22.3 Implement the CRM_UI pages
+  - [x] 22.3 Implement the CRM_UI pages
     - Build the lead list (state + score), lead detail (qualification fields + message history), CSV import with import-report display, and the handed-off leads view exposing collected data and history
     - _Requirements: 13.3, 20.1, 20.2, 20.3, 20.4_
 
