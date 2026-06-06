@@ -13,6 +13,7 @@ export * from "./anti-ban-controller";
 export * from "./cadence-scheduler";
 export * from "./cadence-worker";
 export * from "./compliance-manager";
+export * from "./handoff-manager";
 export * from "./lead-importer";
 export * from "./lifecycle-manager";
 export * from "./nurture-scheduler";

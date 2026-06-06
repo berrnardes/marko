@@ -35,6 +35,18 @@ export type TransitionResult =
 const TERMINAL_STATE = "OPTED_OUT" satisfies LifecycleState;
 
 /**
+ * The handoff target state. A Lead is moved to `HOT` when it is handed off to a
+ * human consultant — and per Req 13.1 this must happen "immediately regardless
+ * of the Lead's current funnel stage." So, like {@link TERMINAL_STATE}'s
+ * universal opt-out edge, `HOT` is reachable from every non-terminal state via
+ * the derived handoff edge in {@link buildTransitionTable} (in addition to the
+ * funnel promotions `QUALIFYING → HOT` and `WARM → HOT`). The terminal
+ * `OPTED_OUT` state is excluded (it can never leave, Req 14.4), and the
+ * self-edge `HOT → HOT` is not added (a no-op self-transition stays rejected).
+ */
+const HANDOFF_STATE = "HOT" satisfies LifecycleState;
+
+/**
  * Every lifecycle state, as a runtime array. The string-literal union
  * {@link LifecycleState} is erased at runtime, so this array is the runtime
  * companion the transition table is built over (and a useful export for the
@@ -134,6 +146,20 @@ function buildTransitionTable(): ReadonlyMap<
 		}
 	}
 
+	// Universal handoff edge to `HOT` from every non-terminal state (Req 13.1).
+	// Hot-lead handoff transfers the Lead "immediately regardless of the Lead's
+	// current funnel stage", so — unlike the funnel promotions `QUALIFYING → HOT`
+	// and `WARM → HOT` in FUNNEL_TRANSITIONS — `HOT` must be reachable from any
+	// state a Lead can be handed off from (e.g. `REPLIED`, `IN_CADENCE`,
+	// `COLD_QUEUED`, `MONTHLY_NURTURE`). The terminal `OPTED_OUT` is skipped so an
+	// opted-out Lead is never resurrected (Req 14.4), and `HOT` is not given a
+	// self-edge so a redundant `HOT → HOT` stays rejected (Req 14.5).
+	for (const state of LIFECYCLE_STATES) {
+		if (state !== TERMINAL_STATE && state !== HANDOFF_STATE) {
+			table.get(state)!.add(HANDOFF_STATE);
+		}
+	}
+
 	return table;
 }
 
@@ -156,6 +182,9 @@ export const TRANSITION_TABLE: ReadonlyMap<
  * table:
  *
  *   - defined funnel moves succeed (Req 14.2);
+ *   - `to === "HOT"` succeeds from every non-terminal state — the universal
+ *     handoff edge (Req 13.1), in addition to the funnel promotions
+ *     `QUALIFYING → HOT` and `WARM → HOT`;
  *   - `to === "OPTED_OUT"` succeeds from every non-terminal state (Req 14.3);
  *   - every move out of `OPTED_OUT` is rejected — it is terminal (Req 14.4);
  *   - every other pair (including self-transitions and undefined moves) is

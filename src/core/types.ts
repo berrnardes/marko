@@ -42,6 +42,19 @@ export type Touch = "T1" | "T2" | "T3" | "T4" | "T5";
 /** A Lead's qualification objective (Req 9, 19.2). */
 export type Objective = "housing" | "investment";
 
+/**
+ * The trigger that caused a Lead to be handed off to a human consultant
+ * (Req 13.1, 13.2). Recorded on each `handoff_events` row and carried by the
+ * Qualification_Agent's graph state:
+ *
+ *   - `hot_score`   — the Lead's Score crossed 70 during the conversation
+ *     (Req 13.1);
+ *   - `frustration` — the agent detected Lead frustration (Req 8.3);
+ *   - `out_of_data` — the Lead asked for a fact outside the agent's available
+ *     data, so it hands off rather than fabricate an answer (Req 8.5).
+ */
+export type HandoffReason = "hot_score" | "frustration" | "out_of_data";
+
 // ---------------------------------------------------------------------------
 // Qualification fields
 // ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@
 
 import type {
 	ClassificationBand,
+	HandoffReason,
 	LeadSnapshot,
 	LifecycleState,
 	OptInStatus,
@@ -97,6 +98,15 @@ export interface ComplianceRecord {
 	leadId: string;
 	optInStatus: OptInStatus;
 	recordedAt: Date;
+}
+
+/** A persisted handoff event recording a transfer to a consultant (Req 13.2). */
+export interface HandoffRecord {
+	id: string;
+	leadId: string;
+	/** The trigger that caused the handoff (Req 13.1, 13.2). */
+	reason: HandoffReason;
+	createdAt: Date;
 }
 
 /**
@@ -235,4 +245,26 @@ export interface ComplianceRepository {
 	): Promise<ComplianceRecord>;
 	/** List a Lead's lawful-basis records in chronological order. */
 	listByLead(leadId: string): Promise<ComplianceRecord[]>;
+}
+
+// ---------------------------------------------------------------------------
+// HandoffRepository
+// ---------------------------------------------------------------------------
+
+/**
+ * Append-only persistence boundary for handoff events (Req 13.2). Each row
+ * records that a Lead was transferred to a human consultant and the trigger
+ * that caused it; the events are read by the CRM_UI's handoff view alongside
+ * the Lead's qualification data and message history (Req 13.3). Mirrors the
+ * append-only shape of {@link ComplianceRepository}.
+ */
+export interface HandoffRepository {
+	/** Append a handoff event with its triggering reason and timestamp (Req 13.2). */
+	appendEvent(
+		leadId: string,
+		reason: HandoffReason,
+		at: Date,
+	): Promise<HandoffRecord>;
+	/** List a Lead's handoff events in chronological order. */
+	listByLead(leadId: string): Promise<HandoffRecord[]>;
 }

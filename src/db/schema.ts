@@ -34,6 +34,7 @@ import {
 
 import type {
 	ClassificationBand,
+	HandoffReason,
 	LifecycleState,
 	Objective,
 	OptInStatus,
@@ -115,8 +116,8 @@ export const handoffReasons = [
 	"hot_score",
 	"frustration",
 	"out_of_data",
-] as const;
-export type HandoffReason = (typeof handoffReasons)[number];
+] as const satisfies readonly HandoffReason[];
+export type { HandoffReason };
 
 /** Per-row import outcome — constrains `import_rows.outcome` (Req 1.3, 1.6). */
 export const importOutcomes = ["created", "updated", "rejected"] as const;
