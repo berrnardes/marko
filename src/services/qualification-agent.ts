@@ -123,6 +123,7 @@ export interface ScoringEngine {
 /**
  * The LangGraph turn state threaded through the qualification nodes. Each node
  * reads and augments this value: `extract_fields` fills {@link extracted},
+ * `score_and_classify` sets {@link score} and {@link band},
  * `select_next_question` sets {@link nextField}, `generate_reply` produces
  * {@link candidate}, and `detect_triggers` sets {@link handoffReason} when a
  * frustration / out-of-data / hot-score trigger fires (Req 8.3, 8.5, 13.1).
@@ -136,6 +137,10 @@ export interface TurnState {
 	currentFields: QualificationFields;
 	/** Fields volunteered this turn, filled by `extract_fields` (Req 9.2). */
 	extracted: ExtractedFields;
+	/** The Lead's Score recomputed this turn by `score_and_classify` (Req 11.1). */
+	score: number;
+	/** The score band classified this turn by `score_and_classify` (Req 12.1–12.4). */
+	band: ClassificationBand;
 	/** The single field `select_next_question` chose to ask, or null when all are filled (Req 9.3). */
 	nextField: keyof QualificationFields | null;
 	/** The candidate reply produced by `generate_reply` (Req 8.1). */
@@ -370,6 +375,155 @@ export function createSelectNextQuestionNode(): (
 		state: Pick<TurnState, "currentFields">,
 	): Promise<Pick<TurnState, "nextField">> {
 		return { nextField: selectNextQuestionField(state.currentFields) };
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Graph node: score_and_classify (Req 11.1, 12.1–12.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Create the `score_and_classify` graph node (Req 11.1, 12.1–12.4).
+ *
+ * The node recomputes the Lead's Score from its current qualification and
+ * behavioral signals via the injected {@link ScoringEngine.recompute} and
+ * threads the returned `{ score, band }` into the turn state (Req 11.1). The
+ * band partitions the score range per Req 12 (`HOT` >= 70, `WARM` 40–69, `cold`
+ * 1–39, `DISQUALIFIED` 0) and is produced by the {@link ScoringEngine}; this
+ * node consumes and forwards it so the downstream `detect_triggers` node can
+ * route a hot Lead to handoff (Req 13.1). The recompute is the single I/O the
+ * node performs; all routing decisions read the threaded values.
+ *
+ * @param scoring - The injected scoring boundary (Req 11.1, 12).
+ * @returns A node mapping a {@link TurnState} to the `score`/`band` update.
+ */
+export function createScoreAndClassifyNode(
+	scoring: ScoringEngine,
+): (
+	state: Pick<TurnState, "leadId">,
+) => Promise<Pick<TurnState, "score" | "band">> {
+	return async function scoreAndClassify(
+		state: Pick<TurnState, "leadId">,
+	): Promise<Pick<TurnState, "score" | "band">> {
+		const { score, band } = await scoring.recompute(state.leadId);
+		return { score, band };
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Graph node: detect_triggers (Req 8.3, 8.5, 13.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * The Score at or above which a Lead is hot and must be handed off immediately,
+ * regardless of its current funnel stage (Req 13.1). This mirrors the `HOT`
+ * band's lower edge in `@/core/classify` so the `hot_score` trigger fires for
+ * exactly the scores classified `HOT`.
+ */
+const HOT_SCORE_THRESHOLD = 70;
+
+/**
+ * The handoff-trigger signals evaluated by {@link detectHandoffReason}, drawn
+ * from the turn state: the two boolean flags the reply node surfaces on its
+ * {@link AgentOutput} (Req 8.3, 8.5) and the Score recomputed by
+ * `score_and_classify` (Req 13.1).
+ */
+export interface HandoffTriggerSignals {
+	/** The agent detected Lead frustration this turn (Req 8.5). */
+	detectedFrustration: boolean;
+	/** The Lead requested a fact outside the agent's available data (Req 8.3). */
+	outOfDataRequest: boolean;
+	/** The Lead's recomputed Score this turn (Req 13.1). */
+	score: number;
+}
+
+/**
+ * Decide which handoff trigger, if any, fired this turn (Req 8.3, 8.5, 13.1).
+ *
+ * Any one of three independent conditions routes the turn to the `handoff`
+ * node and short-circuits the automated reply:
+ *
+ *   - detected Lead frustration  → `"frustration"`  (Req 8.5);
+ *   - an out-of-data factual request → `"out_of_data"` (Req 8.3);
+ *   - `score >= 70`              → `"hot_score"`    (Req 13.1).
+ *
+ * When more than one condition holds the reasons are prioritized in that order:
+ * a frustrated Lead is de-escalated to a human first, an unanswerable factual
+ * request next, and the score-threshold handoff last. The chosen reason is only
+ * the *recorded* trigger — all three route to the same `handoff` node — so the
+ * ordering affects the `handoff_events` reason, not whether a handoff occurs.
+ * When no condition holds the function returns `null` and the turn continues to
+ * the reply path.
+ *
+ * Pure and total: a function of its inputs with no I/O, so it is unit-testable
+ * in isolation from the graph.
+ *
+ * @param signals - The frustration/out-of-data flags and the recomputed Score.
+ * @returns The triggering handoff reason, or `null` when no trigger fired.
+ */
+export function detectHandoffReason(
+	signals: HandoffTriggerSignals,
+): TurnState["handoffReason"] {
+	if (signals.detectedFrustration) return "frustration";
+	if (signals.outOfDataRequest) return "out_of_data";
+	if (signals.score >= HOT_SCORE_THRESHOLD) return "hot_score";
+	return null;
+}
+
+/**
+ * The destination a conditional edge routes to after `detect_triggers`: either
+ * the `handoff` node (a trigger fired) or the `select_next_question` node (the
+ * turn continues down the reply path).
+ */
+export type DetectTriggersRoute = "handoff" | "select_next_question";
+
+/**
+ * Routing function for the conditional edge leaving `detect_triggers`
+ * (Req 8.3, 8.5, 13.1).
+ *
+ * Routes to the `handoff` node when a trigger fired this turn — short-circuiting
+ * the reply path so no automated message is sent to a frustrated, out-of-data,
+ * or hot Lead (Req 8.3, 8.5, 13.1, 13.4) — and otherwise to
+ * `select_next_question` to continue building the guarded reply. Pure: derived
+ * solely from the {@link TurnState.handoffReason} set by `detect_triggers`.
+ *
+ * @param state - The turn state carrying the detected `handoffReason`.
+ * @returns The next node: `"handoff"` when a trigger fired, else `"select_next_question"`.
+ */
+export function routeAfterDetectTriggers(
+	state: Pick<TurnState, "handoffReason">,
+): DetectTriggersRoute {
+	return state.handoffReason !== null ? "handoff" : "select_next_question";
+}
+
+/**
+ * Create the `detect_triggers` graph node (Req 8.3, 8.5, 13.1).
+ *
+ * The node evaluates the three handoff triggers via the pure
+ * {@link detectHandoffReason} — frustration and an out-of-data factual request
+ * (read from the reply node's {@link AgentOutput} flags on
+ * {@link TurnState.candidate}, Req 8.3, 8.5) and a hot Score (read from
+ * {@link TurnState.score}, Req 13.1) — and sets {@link TurnState.handoffReason}
+ * accordingly. The companion {@link routeAfterDetectTriggers} reads that value
+ * on the conditional edge to either route to `handoff` (short-circuiting the
+ * reply path) or continue to `select_next_question` (Req 13.4). The node
+ * performs no I/O and no model call.
+ *
+ * @returns A node mapping a {@link TurnState} to the `handoffReason` update.
+ */
+export function createDetectTriggersNode(): (
+	state: Pick<TurnState, "candidate" | "score">,
+) => Promise<Pick<TurnState, "handoffReason">> {
+	return async function detectTriggers(
+		state: Pick<TurnState, "candidate" | "score">,
+	): Promise<Pick<TurnState, "handoffReason">> {
+		return {
+			handoffReason: detectHandoffReason({
+				detectedFrustration: state.candidate.detectedFrustration,
+				outOfDataRequest: state.candidate.outOfDataRequest,
+				score: state.score,
+			}),
+		};
 	};
 }
 

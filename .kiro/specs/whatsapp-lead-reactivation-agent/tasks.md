@@ -242,7 +242,7 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - **Property 14: The next qualification question targets only unfilled fields**
     - **Validates: Requirements 9.3**
 
-  - [ ] 20.6 Implement the `score_and_classify` and `detect_triggers` nodes
+  - [x] 20.6 Implement the `score_and_classify` and `detect_triggers` nodes
     - Recompute the score via `Scoring_Engine` and classify the band; route via conditional edges to the `handoff` node on frustration, an out-of-data request, or `score >= 70`, short-circuiting the reply path
     - _Requirements: 8.3, 8.5, 11.1, 12.1, 12.2, 12.3, 12.4, 13.1_
 
