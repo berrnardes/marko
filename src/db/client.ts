@@ -17,8 +17,7 @@ import { authSchema } from "./auth-schema";
 import * as appSchema from "./schema";
 
 /** Connection string for the shared PostgreSQL instance (Tech: `DATABASE_URL`). */
-const connectionString =
-	process.env.DATABASE_URL ?? "postgres://localhost:5432/marko";
+const connectionString = process.env.DATABASE_URL;
 
 /**
  * Shared connection pool. A module-level singleton is reused across hot reloads
