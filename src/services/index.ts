@@ -14,6 +14,8 @@ export * from "./cadence-scheduler";
 export * from "./cadence-worker";
 export * from "./compliance-manager";
 export * from "./handoff-manager";
+export * from "./inbound-handler";
+export * from "./inbound-webhook";
 export * from "./lead-importer";
 export * from "./lifecycle-manager";
 export * from "./nurture-scheduler";

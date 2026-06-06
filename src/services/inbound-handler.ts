@@ -1,0 +1,292 @@
+// Inbound_Handler (I/O boundary — the ordered inbound-reply pipeline).
+//
+// Implements the design's `Inbound_Handler` as the orchestration seam that
+// turns a single inbound WhatsApp message into the system's reaction: attribute
+// it to a Lead (creating one on an unknown sender), record it, acknowledge it,
+// honor an opt-out, otherwise stop the outreach the Lead was receiving, advance
+// the Lead into qualification, recompute its Score, and run one qualification
+// turn. It is the single component that wires inbound delivery to the rest of
+// the domain, so the ordered reply behavior (Req 6.4, 7, 11.1, 15.1, 17.3) is
+// expressed in exactly one place.
+//
+// Side-effect boundary: this module performs all persistence/orchestration I/O
+// through injected INTERFACE dependencies only (never concrete Drizzle/DB code):
+//   - `LeadRepository`     — attribute by normalized number, create on unknown
+//     sender, re-read fresh state (Req 7.1, 7.5);
+//   - `MessageRepository`  — append the inbound message to the Lead's history
+//     (Req 7.4);
+//   - `WahaClient`         — resolve the chat id and send the read receipt
+//     (`sendSeen`, Req 17.3);
+//   - `ComplianceManager`  — apply an opt-out when detected (Req 15.1);
+//   - `CadenceScheduler` / `NurtureScheduler` — cancel pending outreach when the
+//     Lead replies (Req 7.2, 6.4);
+//   - `LifecycleManager`   — advance `IN_CADENCE`/`MONTHLY_NURTURE` →
+//     `REPLIED` → `QUALIFYING` (Req 7.3, 6.4);
+//   - `ScoringEngine`      — recompute the Lead's Score on the inbound (Req 11.1);
+//   - `QualificationAgent` — run the conversational qualification turn (Req 8, 9).
+//
+// Opt-out *detection* is the pure `detectOptOut` predicate in `@/core`; phone
+// attribution is the pure `normalizePhone` in `@/core`. This handler only wires
+// those pure checks to their persisted consequences.
+
+import { detectOptOut, normalizePhone } from "@/core";
+import type { CadenceScheduler } from "@/services/cadence-scheduler";
+import type { ComplianceManager } from "@/services/compliance-manager";
+import type { LifecycleManager } from "@/services/lifecycle-manager";
+import type { NurtureScheduler } from "@/services/nurture-scheduler";
+import type {
+	InboundMessage,
+	QualificationAgent,
+	ScoringEngine,
+} from "@/services/qualification-agent";
+import type {
+	LeadRepository,
+	MessageRepository,
+} from "@/services/repositories";
+import type { WahaClient } from "@/services/waha-client";
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+/**
+ * Raised when an inbound message's sender id cannot be normalized to a valid
+ * E.164 number, so it cannot be attributed to (or used to create) a Lead
+ * (Req 7.1, 7.5). The webhook route validates the body before enqueuing, so a
+ * malformed sender reaching the handler is exceptional; surfacing it lets the
+ * delivery be retried/inspected rather than silently dropped.
+ */
+export class InvalidInboundSenderError extends Error {
+	/** The raw sender id that failed normalization. */
+	readonly from: string;
+
+	constructor(from: string) {
+		super(`Inbound sender "${from}" is not a valid phone number`);
+		this.name = "InvalidInboundSenderError";
+		this.from = from;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Handler interface (design `InboundHandler`)
+// ---------------------------------------------------------------------------
+
+/**
+ * The inbound-reply orchestration boundary. Mirrors the design's
+ * `InboundHandler` interface exactly: a single `handle(msg)` that runs the
+ * ordered pipeline for one inbound message.
+ */
+export interface InboundHandler {
+	/**
+	 * Process one inbound WhatsApp message through the ordered pipeline
+	 * (Req 6.4, 7, 11.1, 15.1, 17.3):
+	 *
+	 *   1. Attribute the message to the Lead whose normalized E.164 number
+	 *      matches the sender, creating a new Lead when none matches (Req 7.1,
+	 *      7.5).
+	 *   2. Append the inbound message to that Lead's history with its content and
+	 *      receipt timestamp (Req 7.4).
+	 *   3. Mark the inbound message as seen via `WAHA_Client.sendSeen` (Req 17.3).
+	 *   4. Detect an opt-out request (`detectOptOut`); when present, apply the
+	 *      opt-out (set `opt_out`, transition to `OPTED_OUT`, cancel all
+	 *      outreach) and STOP — no qualification runs for an opted-out Lead
+	 *      (Req 15.1).
+	 *   5. Otherwise cancel all pending cadence and nurture jobs for the Lead, so
+	 *      a reply silences the outreach it was receiving (Req 7.2, 6.4).
+	 *   6. Advance the Lead `IN_CADENCE`/`MONTHLY_NURTURE` → `REPLIED` →
+	 *      `QUALIFYING` so the conversation enters qualification (Req 7.3, 6.4).
+	 *   7. Recompute the Lead's Score on the inbound signal (Req 11.1).
+	 *   8. Run one qualification turn against the message (Req 8, 9).
+	 *
+	 * @param msg - The inbound message to process.
+	 * @throws {InvalidInboundSenderError} when the sender id cannot be normalized.
+	 */
+	handle(msg: InboundMessage): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// Construction configuration
+// ---------------------------------------------------------------------------
+
+/** Construction dependencies for {@link InboundHandlerService}. */
+export interface InboundHandlerConfig {
+	/** Lead attribution/creation and fresh-state reads (Req 7.1, 7.5). */
+	leads: LeadRepository;
+	/** Append the inbound message to the Lead's history (Req 7.4). */
+	messages: MessageRepository;
+	/** Resolve the chat id and send the read receipt (Req 17.3). */
+	waha: WahaClient;
+	/** Apply an opt-out when one is detected on the inbound (Req 15.1). */
+	compliance: ComplianceManager;
+	/** Cancel the Lead's pending cadence touches on reply (Req 7.2). */
+	cadence: CadenceScheduler;
+	/** Cancel the Lead's pending monthly nurture on reply (Req 6.4). */
+	nurture: NurtureScheduler;
+	/** Advance the Lead through `REPLIED` to `QUALIFYING` (Req 7.3, 6.4). */
+	lifecycle: LifecycleManager;
+	/** Recompute the Lead's Score on the inbound (Req 11.1). */
+	scoring: ScoringEngine;
+	/** Run the conversational qualification turn (Req 8, 9). */
+	agent: QualificationAgent;
+	/**
+	 * Source recorded on a Lead created from an unknown inbound sender (Req 7.5,
+	 * 2.1). Defaults to {@link DEFAULT_INBOUND_SOURCE}.
+	 */
+	inboundSource?: string;
+}
+
+/** Default `source` for a Lead created from an unknown inbound sender (Req 7.5). */
+export const DEFAULT_INBOUND_SOURCE = "whatsapp_inbound";
+
+/**
+ * The lifecycle states from which an inbound reply advances the Lead into
+ * qualification (`→ REPLIED → QUALIFYING`). A Lead being actively reactivated
+ * (`IN_CADENCE`) or nurtured (`MONTHLY_NURTURE`) re-enters the funnel on reply
+ * (Req 7.3, 6.4); a Lead already past `REPLIED` (e.g. mid-`QUALIFYING`) is left
+ * where it is and simply continues the conversation, and a freshly-created
+ * `COLD_QUEUED` Lead has no pending outreach to interrupt.
+ */
+const ADVANCE_FROM_STATES = ["IN_CADENCE", "MONTHLY_NURTURE"] as const;
+
+// ---------------------------------------------------------------------------
+// InboundHandlerService
+// ---------------------------------------------------------------------------
+
+/**
+ * Concrete {@link InboundHandler} backed by the injected repository, manager,
+ * scheduler, scoring, and agent dependencies. Stateless beyond its
+ * dependencies; every call runs the ordered pipeline through the interfaces it
+ * was constructed with and performs no other I/O.
+ */
+export class InboundHandlerService implements InboundHandler {
+	private readonly leads: LeadRepository;
+	private readonly messages: MessageRepository;
+	private readonly waha: WahaClient;
+	private readonly compliance: ComplianceManager;
+	private readonly cadence: CadenceScheduler;
+	private readonly nurture: NurtureScheduler;
+	private readonly lifecycle: LifecycleManager;
+	private readonly scoring: ScoringEngine;
+	private readonly agent: QualificationAgent;
+	private readonly inboundSource: string;
+
+	constructor(deps: InboundHandlerConfig) {
+		this.leads = deps.leads;
+		this.messages = deps.messages;
+		this.waha = deps.waha;
+		this.compliance = deps.compliance;
+		this.cadence = deps.cadence;
+		this.nurture = deps.nurture;
+		this.lifecycle = deps.lifecycle;
+		this.scoring = deps.scoring;
+		this.agent = deps.agent;
+		this.inboundSource = deps.inboundSource ?? DEFAULT_INBOUND_SOURCE;
+	}
+
+	/** @inheritdoc */
+	async handle(msg: InboundMessage): Promise<void> {
+		// 1. Attribute by normalized E.164, creating a Lead on an unknown sender
+		//    (Req 7.1, 7.5). Normalization is the same pure rule the importer uses
+		//    so the dedup key matches; a sender that cannot be normalized has no
+		//    valid identity to attribute or create against.
+		const phoneE164 = normalizePhone(msg.from, "BR");
+		if (phoneE164 === null) {
+			throw new InvalidInboundSenderError(msg.from);
+		}
+		const existing = await this.leads.findByPhone(phoneE164);
+		const lead =
+			existing ??
+			(await this.leads.create({
+				phoneE164,
+				source: this.inboundSource,
+			}));
+
+		// 2. Persist the inbound message with its content and receipt timestamp so
+		//    it is never lost and round-trips in the Lead's history (Req 7.4).
+		await this.messages.append({
+			leadId: lead.id,
+			direction: "inbound",
+			content: msg.text,
+			waMessageId: msg.waMessageId,
+			createdAt: msg.receivedAt,
+		});
+
+		// 3. Acknowledge the inbound with a read receipt from the receiving number
+		//    (Req 17.3). Best-effort: a courtesy receipt must never block honoring
+		//    an opt-out or qualifying a hot Lead, so a transient WAHA failure (or a
+		//    delivery with no known receiving number) is swallowed here.
+		await this.markSeen(msg);
+
+		// 4. Opt-out short-circuit (Req 15.1). Detection is the pure `detectOptOut`
+		//    predicate; on a match the Compliance_Manager sets `opt_out`,
+		//    transitions the Lead to the terminal `OPTED_OUT`, and cancels all
+		//    scheduled outreach. No qualification runs for an opted-out Lead.
+		if (detectOptOut(msg.text)) {
+			await this.compliance.applyOptOut(lead.id, msg.receivedAt);
+			return;
+		}
+
+		// 5. Cancel pending outreach the Lead was receiving (Req 7.2, 6.4). Both
+		//    cancels are no-ops when there is nothing pending (e.g. a brand-new
+		//    Lead), so they are safe to run unconditionally.
+		await this.cadence.cancelAll(lead.id);
+		await this.nurture.cancel(lead.id);
+
+		// 6. Advance the Lead into qualification (Req 7.3, 6.4). Only a Lead being
+		//    reactivated (`IN_CADENCE`) or nurtured (`MONTHLY_NURTURE`) re-enters
+		//    the funnel here; the `LifecycleManager` validates each move, so a Lead
+		//    already past `REPLIED` is left untouched. Cancellation does not change
+		//    lifecycle state, so the state read at attribution is still current.
+		if (
+			(ADVANCE_FROM_STATES as readonly string[]).includes(lead.lifecycleState)
+		) {
+			const replied = await this.lifecycle.apply(lead.id, "REPLIED");
+			if (replied.ok) {
+				await this.lifecycle.apply(lead.id, "QUALIFYING");
+			}
+		}
+
+		// 7. Recompute the Lead's Score on the inbound signal (Req 11.1). Idempotent
+		//    and independent of the turn's own recompute, so it satisfies Req 11.1
+		//    even when the qualification turn short-circuits to handoff.
+		await this.scoring.recompute(lead.id);
+
+		// 8. Run one conversational qualification turn against the message
+		//    (Req 8, 9). The agent extracts volunteered fields, persists them
+		//    progressively, re-scores/classifies, and either replies (guarded) or
+		//    hands the Lead off.
+		await this.agent.nextTurn(lead.id, msg);
+	}
+
+	/**
+	 * Send the read receipt for an inbound message (Req 17.3), best-effort.
+	 *
+	 * Resolves the canonical WhatsApp chat id from the sender's E.164 (handling
+	 * the Brazilian pre-2012 ambiguity inside the client) and marks the message
+	 * seen from the receiving number. A read receipt is a courtesy and must not
+	 * block the rest of the pipeline, so a missing receiving number or a WAHA
+	 * failure is swallowed rather than propagated.
+	 */
+	private async markSeen(msg: InboundMessage): Promise<void> {
+		if (!msg.numberId) {
+			return;
+		}
+		try {
+			const chatId = await this.waha.resolveChatId(msg.from);
+			await this.waha.sendSeen(msg.numberId, chatId, [msg.waMessageId]);
+		} catch {
+			// Swallow: the receipt is non-essential (Req 17.3 is a courtesy ack).
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
+/** Construct an {@link InboundHandler} from {@link InboundHandlerConfig}. */
+export function createInboundHandler(
+	config: InboundHandlerConfig,
+): InboundHandler {
+	return new InboundHandlerService(config);
+}

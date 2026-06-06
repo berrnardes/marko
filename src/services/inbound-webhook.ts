@@ -1,0 +1,359 @@
+// Inbound WAHA webhook orchestration (I/O boundary — the entry-point seam).
+//
+// Implements the design's "Inbound webhook (WAHA → system)" error-handling
+// contract as a thin, testable function the Next.js route (`/api/waha/webhook`,
+// task 21.4) delegates to. The HTTP entry point stays a thin adapter; the
+// verify → validate → idempotency → persist → enqueue logic lives here in the
+// services layer so it can be unit/integration-tested without spinning up Next
+// (task 21.5).
+//
+// Responsibilities (Req 7.1, 7.4):
+//   1. Verify the `X-Webhook-Hmac` (HMAC SHA-512 over the RAW request body,
+//      keyed by the configured shared secret) with a timing-safe comparison;
+//      reject an invalid/missing signature with `401` and process nothing.
+//   2. Validate the untrusted body against {@link WahaMessageWebhookSchema};
+//      reject a malformed body with `400`.
+//   3. Enforce idempotency by `wa_message_id`: WAHA retries deliveries, so a
+//      message whose id was already persisted is acknowledged with a fast `2xx`
+//      and NOT re-processed (no double persist, no double enqueue).
+//   4. Persist the raw inbound message (the persisted record is also the
+//      idempotency key for step 3).
+//   5. Enqueue processing onto the durable inbound queue and return a fast `2xx`
+//      acknowledgement — the heavy Inbound_Handler pipeline (sendSeen, opt-out,
+//      cancellation, lifecycle advance, scoring, the LLM qualification turn)
+//      runs in the worker, NOT inline here, so WAHA does not retry on timeout.
+//
+// Side-effect boundary: all persistence/orchestration flows through injected
+// INTERFACE dependencies only (never concrete Drizzle/DB or pg-boss code):
+//   - `LeadRepository`            — attribute the sender by normalized E.164,
+//     creating a Lead on an unknown sender, so the persisted message has a
+//     `lead_id` (the `messages.lead_id` FK is NOT NULL) (Req 7.1, 7.5);
+//   - `MessageRepository`         — idempotency lookup by `wa_message_id` and
+//     raw inbound persistence (Req 7.4);
+//   - `InboundProcessingQueue`    — the durable enqueue seam (the pg-boss
+//     boundary, injected) onto which processing is handed off (Req 7.1).
+//
+// Phone attribution reuses the pure `normalizePhone` from `@/core`; the HMAC
+// check is the only crypto here and is performed over the exact raw bytes the
+// caller read before JSON parsing, so the signature matches WAHA's.
+
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+import { z } from "zod";
+
+import { normalizePhone } from "@/core";
+import type {
+	LeadRepository,
+	MessageRepository,
+} from "@/services/repositories";
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/**
+ * The header WAHA signs each webhook delivery with: the hex-encoded HMAC
+ * SHA-512 digest of the raw request body, keyed by the configured shared secret
+ * (design "WAHA integration facts"; Req 7.1).
+ */
+export const WAHA_HMAC_HEADER = "x-webhook-hmac";
+
+/** The HMAC digest algorithm WAHA uses for webhook signing (Req 7.1). */
+const HMAC_ALGORITHM = "sha512";
+
+/** The only WAHA webhook event this route handles (Req 7.1). */
+const HANDLED_EVENT = "message";
+
+// ---------------------------------------------------------------------------
+// Request-body schema (untrusted input — design "treated as untrusted input")
+// ---------------------------------------------------------------------------
+
+/**
+ * The subset of WAHA's `message` webhook payload this route consumes. WAHA
+ * sends many more fields per message; the schema is permissive
+ * (`z.looseObject`, extra fields preserved) but REQUIRES the fields we read so
+ * a malformed delivery missing them is rejected with `400` (Req 7.1). The
+ * sender id (`from`) and message id (`id`) are non-empty; `timestamp` is the
+ * WAHA epoch-seconds receipt time.
+ */
+export const WahaMessagePayloadSchema = z.looseObject({
+	/** WAHA message id — the at-least-once idempotency key (`wa_message_id`). */
+	id: z.string().min(1),
+	/** Raw WhatsApp sender id (e.g. `"5511999999999@c.us"`), normalized later. */
+	from: z.string().min(1),
+	/** The inbound message text. */
+	body: z.string(),
+	/** Receipt time as WAHA epoch SECONDS. */
+	timestamp: z.number(),
+});
+
+/**
+ * The WAHA webhook envelope for an inbound `message` event (Req 7.1). `event`
+ * is pinned to `"message"` so non-message events (presence, status, …) are
+ * rejected as malformed for this route; `session` is the WAHA session that
+ * received the message, carried through to the worker so it can resolve the
+ * receiving WhatsApp number. Permissive (`z.looseObject`) on the envelope too.
+ */
+export const WahaMessageWebhookSchema = z.looseObject({
+	event: z.literal(HANDLED_EVENT),
+	session: z.string().min(1),
+	payload: WahaMessagePayloadSchema,
+});
+
+/** A validated WAHA `message` webhook delivery, inferred from the schema. */
+export type WahaMessageWebhook = z.infer<typeof WahaMessageWebhookSchema>;
+
+// ---------------------------------------------------------------------------
+// Inbound processing queue seam (the pg-boss enqueue boundary)
+// ---------------------------------------------------------------------------
+
+/**
+ * The durable payload enqueued for asynchronous inbound processing. It carries
+ * exactly what the worker (task 23.1) needs to run the full Inbound_Handler
+ * pipeline for one message: the attributed Lead, the original WAHA fields
+ * needed to send the read receipt and detect opt-out, and the WAHA `session`
+ * that received it (the worker resolves that to the receiving `numberId` for
+ * `WAHA_Client.sendSeen`, Req 17.3). Nothing time-sensitive beyond `receivedAt`
+ * is captured; the worker re-reads fresh Lead state at execution time.
+ */
+export interface InboundProcessingJob {
+	/** The Lead the message was attributed to (created if the sender was unknown). */
+	leadId: string;
+	/** The persisted inbound message id (the raw record persisted at the route). */
+	messageId: string;
+	/** WAHA message id; the at-least-once idempotency key. */
+	waMessageId: string;
+	/** Raw WhatsApp sender id, normalized to E.164 by the pipeline. */
+	from: string;
+	/** The inbound message text. */
+	text: string;
+	/** When the message was received. */
+	receivedAt: Date;
+	/** The WAHA session that received the message (resolved to a `numberId`). */
+	session: string;
+}
+
+/**
+ * The durable job-queue seam the webhook depends on — the pg-boss enqueue
+ * boundary for inbound processing, injected rather than constructed inline so
+ * the route never touches pg-boss directly and stays testable against a fake
+ * queue (mirroring {@link import("./outbound-worker").OutboundSendQueue} and
+ * the cadence/nurture queues). Production wiring (task 23.1) backs this with the
+ * real pg-boss instance and registers the worker handler that runs the
+ * Inbound_Handler pipeline; tests back it with an in-memory fake.
+ */
+export interface InboundProcessingQueue {
+	/**
+	 * Enqueue one inbound message for asynchronous processing through the
+	 * Inbound_Handler pipeline, returning the queue's job id.
+	 */
+	enqueueInbound(job: InboundProcessingJob): Promise<string>;
+}
+
+// ---------------------------------------------------------------------------
+// Dependencies + result
+// ---------------------------------------------------------------------------
+
+/** Construction dependencies for {@link processWahaWebhook}. */
+export interface WahaWebhookDeps {
+	/**
+	 * The shared HMAC secret the `X-Webhook-Hmac` signature is verified against
+	 * (Req 7.1). Sourced from the `WAHA_WEBHOOK_HMAC_SECRET` env var by the route;
+	 * never hard-coded.
+	 */
+	secret: string;
+	/** Attribute the sender by normalized E.164, creating a Lead if unknown (Req 7.1, 7.5). */
+	leads: LeadRepository;
+	/** Idempotency lookup by `wa_message_id` + raw inbound persistence (Req 7.4). */
+	messages: MessageRepository;
+	/** Durable enqueue seam onto the inbound processing pipeline (Req 7.1). */
+	queue: InboundProcessingQueue;
+	/**
+	 * Source recorded on a Lead created from an unknown inbound sender (Req 7.5).
+	 * Defaults to {@link DEFAULT_INBOUND_WEBHOOK_SOURCE}.
+	 */
+	inboundSource?: string;
+}
+
+/** Default `source` for a Lead first seen via the inbound webhook (Req 7.5). */
+export const DEFAULT_INBOUND_WEBHOOK_SOURCE = "whatsapp_inbound";
+
+/**
+ * The outcome of handling one webhook delivery — a plain value the HTTP adapter
+ * maps to a `Response`. `status` is the HTTP status to return; `body` is the
+ * JSON acknowledgement payload.
+ */
+export interface WebhookResult {
+	/** HTTP status: `401` (bad signature), `400` (malformed), or `200` (accepted/duplicate). */
+	status: 401 | 400 | 200;
+	/** JSON acknowledgement body. */
+	body: {
+		ok: boolean;
+		status: "accepted" | "duplicate" | "rejected";
+		reason?: string;
+	};
+}
+
+// ---------------------------------------------------------------------------
+// HMAC verification (Req 7.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Verify a webhook's `X-Webhook-Hmac` signature against the raw request body
+ * (Req 7.1).
+ *
+ * Computes the hex-encoded HMAC SHA-512 of the EXACT raw body bytes keyed by
+ * `secret` and compares it to `signature` with a constant-time comparison
+ * (`crypto.timingSafeEqual`) so a wrong signature cannot be discovered by
+ * timing. A missing/empty signature, or one whose byte length differs from the
+ * expected digest (a fast, non-secret-dependent reject), returns `false`.
+ *
+ * Pure apart from the cryptographic hashing of its inputs; performs no I/O.
+ *
+ * @param rawBody - The exact raw request body the signature was computed over.
+ * @param signature - The `X-Webhook-Hmac` header value (hex), or `null` when absent.
+ * @param secret - The configured shared HMAC secret.
+ * @returns `true` only when the signature is present and matches.
+ */
+export function verifyWebhookSignature(
+	rawBody: string,
+	signature: string | null | undefined,
+	secret: string,
+): boolean {
+	if (!signature) {
+		return false;
+	}
+	const expected = createHmac(HMAC_ALGORITHM, secret)
+		.update(rawBody, "utf8")
+		.digest("hex");
+	const expectedBuf = Buffer.from(expected, "utf8");
+	const providedBuf = Buffer.from(signature, "utf8");
+	// timingSafeEqual requires equal-length buffers; a length mismatch is itself
+	// a mismatch and is safe to reveal (it does not depend on the secret).
+	if (expectedBuf.length !== providedBuf.length) {
+		return false;
+	}
+	return timingSafeEqual(expectedBuf, providedBuf);
+}
+
+// ---------------------------------------------------------------------------
+// Webhook handler (verify → validate → idempotency → persist → enqueue)
+// ---------------------------------------------------------------------------
+
+/**
+ * Handle one WAHA `message` webhook delivery end-to-end (Req 7.1, 7.4), the
+ * testable core the Next.js route delegates to.
+ *
+ * Order matters and mirrors the design's inbound-webhook contract:
+ *
+ *   1. **Verify** the HMAC signature over the raw body; on failure return `401`
+ *      and process NOTHING (no parse, no persist, no enqueue).
+ *   2. **Validate** the parsed body against {@link WahaMessageWebhookSchema};
+ *      on failure return `400`.
+ *   3. **Idempotency**: if a message with this `wa_message_id` was already
+ *      persisted, return a fast `200` `"duplicate"` without re-processing — so a
+ *      WAHA retry neither double-persists nor double-enqueues (Req 7.4).
+ *   4. **Attribute + persist**: normalize the sender to E.164, find or create
+ *      the Lead (Req 7.1, 7.5), and persist the raw inbound message — the
+ *      persisted row is the idempotency key future retries hit in step 3.
+ *   5. **Enqueue**: hand the message to the durable inbound queue and return a
+ *      fast `200` `"accepted"`. The heavy pipeline runs in the worker, not here.
+ *
+ * @param deps - The injected secret, repositories, and queue.
+ * @param rawBody - The exact raw request body text (read BEFORE JSON parsing so
+ *   the HMAC is computed over the same bytes WAHA signed).
+ * @param signature - The `X-Webhook-Hmac` header value, or `null` when absent.
+ * @returns A {@link WebhookResult} the HTTP adapter maps to a `Response`.
+ */
+export async function processWahaWebhook(
+	deps: WahaWebhookDeps,
+	rawBody: string,
+	signature: string | null | undefined,
+): Promise<WebhookResult> {
+	// 1. Verify the signature over the RAW body before doing anything else
+	//    (Req 7.1). An invalid/missing signature is rejected with 401 and the
+	//    body is never parsed or acted upon.
+	if (!verifyWebhookSignature(rawBody, signature, deps.secret)) {
+		return {
+			status: 401,
+			body: { ok: false, status: "rejected", reason: "invalid_signature" },
+		};
+	}
+
+	// 2. Parse + validate the untrusted body (Req 7.1). A body that is not JSON,
+	//    or that does not match the `message` schema, is malformed → 400.
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(rawBody);
+	} catch {
+		return {
+			status: 400,
+			body: { ok: false, status: "rejected", reason: "invalid_json" },
+		};
+	}
+	const result = WahaMessageWebhookSchema.safeParse(parsed);
+	if (!result.success) {
+		return {
+			status: 400,
+			body: { ok: false, status: "rejected", reason: "invalid_body" },
+		};
+	}
+	const { session, payload } = result.data;
+	const waMessageId = payload.id;
+
+	// 3. Idempotency by `wa_message_id` (Req 7.4). WAHA retries deliveries, so a
+	//    message already persisted is acknowledged fast and NOT re-processed.
+	const existing = await deps.messages.findByWaMessageId(waMessageId);
+	if (existing) {
+		return { status: 200, body: { ok: true, status: "duplicate" } };
+	}
+
+	// 4. Attribute the sender and persist the raw inbound. The `messages.lead_id`
+	//    FK is NOT NULL, so the Lead must exist before the message is recorded:
+	//    normalize the sender to E.164 (the same pure rule the importer uses so
+	//    the dedup key matches) and find-or-create the Lead (Req 7.1, 7.5). A
+	//    sender that cannot be normalized is malformed for attribution → 400.
+	const phoneE164 = normalizePhone(payload.from, "BR");
+	if (phoneE164 === null) {
+		return {
+			status: 400,
+			body: { ok: false, status: "rejected", reason: "invalid_sender" },
+		};
+	}
+	const existingLead = await deps.leads.findByPhone(phoneE164);
+	const lead =
+		existingLead ??
+		(await deps.leads.create({
+			phoneE164,
+			source: deps.inboundSource ?? DEFAULT_INBOUND_WEBHOOK_SOURCE,
+		}));
+
+	// WAHA `timestamp` is epoch SECONDS; convert to a `Date` for persistence.
+	const receivedAt = new Date(payload.timestamp * 1000);
+	const persisted = await deps.messages.append({
+		leadId: lead.id,
+		direction: "inbound",
+		content: payload.body,
+		waMessageId,
+		createdAt: receivedAt,
+	});
+
+	// 5. Enqueue processing and acknowledge fast (Req 7.1). The full
+	//    Inbound_Handler pipeline (sendSeen, opt-out, cancellation, lifecycle
+	//    advance, scoring, qualification turn) runs in the worker, NOT inline.
+	//    TODO(task 23.1): the worker handler must run the pipeline WITHOUT
+	//    re-persisting this message (the raw inbound is already recorded here),
+	//    e.g. by skipping the Inbound_Handler's own `messages.append` for an
+	//    already-persisted `wa_message_id`, so idempotency holds end-to-end.
+	await deps.queue.enqueueInbound({
+		leadId: lead.id,
+		messageId: persisted.id,
+		waMessageId,
+		from: payload.from,
+		text: payload.body,
+		receivedAt,
+		session,
+	});
+
+	return { status: 200, body: { ok: true, status: "accepted" } };
+}

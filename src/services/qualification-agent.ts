@@ -123,6 +123,15 @@ export interface InboundMessage {
 	receivedAt: Date;
 	/** WAHA message id, used for inbound idempotency. */
 	waMessageId: string;
+	/**
+	 * The domain `numberId` of the WhatsApp number/session that *received* this
+	 * inbound message, when known. The Inbound_Handler uses it to send the read
+	 * receipt (`WAHA_Client.sendSeen`, Req 17.3) from the same number the Lead
+	 * is conversing with; it is populated by the webhook route (task 21.4) from
+	 * the delivering session. Optional because not every caller (e.g. a turn
+	 * replayed in tests) needs to drive a read receipt.
+	 */
+	numberId?: string;
 }
 
 /**

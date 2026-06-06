@@ -266,8 +266,8 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - Assert the agent confirms it is an AI when asked directly (8.2) and opens with a single re-engagement question (9.1)
     - _Requirements: 8.2, 9.1_
 
-- [ ] 21. Implement the Inbound_Handler and webhook route
-  - [ ] 21.1 Implement the inbound pipeline
+- [x] 21. Implement the Inbound_Handler and webhook route
+  - [x] 21.1 Implement the inbound pipeline
     - Identify the lead by normalized number (create one if none), persist the inbound message + timestamp, `sendSeen`, run opt-out detection (apply opt-out and stop if matched), otherwise cancel pending cadence/nurture jobs, advance `IN_CADENCE`/`MONTHLY_NURTURE` → `REPLIED` → `QUALIFYING`, recompute the score, and run the qualification turn
     - _Requirements: 6.4, 7.1, 7.2, 7.3, 7.4, 7.5, 11.1, 15.1, 17.3_
 
@@ -279,7 +279,7 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - **Property 10: Inbound messages are attributed by normalized number and never lost**
     - **Validates: Requirements 7.1, 7.4, 7.5**
 
-  - [ ] 21.4 Implement the `/api/waha/webhook` route
+  - [x] 21.4 Implement the `/api/waha/webhook` route
     - Verify the `X-Webhook-Hmac` (SHA-512) signature, validate the body against a schema, enforce idempotency by `wa_message_id`, persist the raw inbound, and enqueue processing with a fast `2xx` acknowledgement
     - _Requirements: 7.1, 7.4_
 
