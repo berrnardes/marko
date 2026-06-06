@@ -199,8 +199,8 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - On each touch job, re-read fresh state + block flag, run `evaluateSendGuard` (skip and cancel remaining jobs when stopped), otherwise render the touch and enqueue an outbound send; on T5 for a non-replying lead set `CADENCE_EXHAUSTED` and trigger nurture
     - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 5.1, 6.1_
 
-- [ ] 17. Implement the Nurture_Scheduler and Nurture_Worker
-  - [ ] 17.1 Implement monthly nurture scheduling
+- [x] 17. Implement the Nurture_Scheduler and Nurture_Worker
+  - [x] 17.1 Implement monthly nurture scheduling
     - On `CADENCE_EXHAUSTED`, transition to `MONTHLY_NURTURE` and schedule recurring monthly outreach one calendar month apart; implement `cancel` and the worker that enqueues a nurture outbound send
     - _Requirements: 6.1, 6.2, 6.3_
 
