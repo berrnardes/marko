@@ -19,5 +19,6 @@ export * from "./lifecycle-manager";
 export * from "./nurture-scheduler";
 export * from "./nurture-worker";
 export * from "./outbound-worker";
+export * from "./qualification-agent";
 export * from "./repositories";
 export * from "./waha-client";

@@ -222,7 +222,7 @@ Each of the 24 correctness properties from the design is realized by exactly one
   - Ensure all tests pass, ask the user if questions arise.
 
 - [ ] 20. Implement the Qualification_Agent (LangGraph)
-  - [ ] 20.1 Implement zod schemas, turn state, and graph scaffolding
+  - [x] 20.1 Implement zod schemas, turn state, and graph scaffolding
     - Define `ExtractedFieldsSchema`, `AgentOutputSchema`, and `TurnState`; scaffold `buildQualificationGraph(deps)` with an injectable `BaseChatModel` and the `QualificationAgent` interface boundary
     - _Requirements: 8.1, 9.2_
 
