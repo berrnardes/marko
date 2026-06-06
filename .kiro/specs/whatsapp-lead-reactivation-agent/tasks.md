@@ -250,7 +250,7 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - **Property 11: Behavioral triggers route a Lead to handoff**
     - **Validates: Requirements 8.3, 8.5**
 
-  - [ ] 20.8 Implement the `generate_reply` and `guard` nodes
+  - [x] 20.8 Implement the `generate_reply` and `guard` nodes
     - `generate_reply` produces the "Marko" persona reply (at most one question) via `model.withStructuredOutput(AgentOutputSchema)`; the `guard` repairs or rejects any reply with more than one question or asserting consórcio rate/group/contemplation facts whose tokens are absent from the lead's available data
     - _Requirements: 8.1, 8.2, 8.4, 8.6_
 

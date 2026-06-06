@@ -527,6 +527,274 @@ export function createDetectTriggersNode(): (
 	};
 }
 
+// ---------------------------------------------------------------------------
+// Graph node: generate_reply (Req 8.1, 8.2, 8.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * The system prompt that frames the "Marko" persona reply (Req 8.1, 8.2, 8.4,
+ * 8.6). It pins the persona (an attentive, direct consórcio specialist), the
+ * honesty rules (confirm being an AI when the Lead asks — Req 8.2; never state
+ * consórcio rates, group details, or contemplation outcomes absent from the
+ * supplied data — Req 8.6), and the one-question constraint (Req 8.4). The
+ * model is also asked to surface the honesty/handoff flags and to list, in
+ * `assertedFacts`, every factual token the reply asserts so the downstream
+ * {@link createGuardNode} can repair or reject unsupported claims (Req 8.6).
+ */
+const GENERATE_REPLY_SYSTEM_PROMPT =
+	'You are "Marko," an attentive and direct Brazilian consórcio specialist ' +
+	"talking to a lead on WhatsApp. Reply in Brazilian Portuguese, warm but " +
+	"concise. Rules you must always follow:\n" +
+	"- Ask AT MOST ONE question in your reply. When a field to collect " +
+	"is provided, ask only about that single field.\n" +
+	"- If the lead directly asks whether you are an AI, confirm that you are an " +
+	"AI and set asksAreYouAI=true.\n" +
+	"- NEVER state consórcio rates, group details, or contemplation outcomes " +
+	"that are not present in the supplied available data; do not invent numbers " +
+	"or guarantees.\n" +
+	"- List in assertedFacts every concrete factual token your reply asserts " +
+	"(e.g. a rate, a group id, a contemplation claim) so it can be verified " +
+	"against the available data; leave it empty when you assert no such fact.\n" +
+	"- Set detectedFrustration=true when the lead sounds frustrated or angry, " +
+	"and outOfDataRequest=true when the lead asks for a fact you do not hold.";
+
+/**
+ * Build the prompt messages for {@link createGenerateReplyNode}. The inbound
+ * text, the Lead's already-known fields, and the single field
+ * `select_next_question` chose are supplied as context so the persona reply
+ * asks about exactly that one field — or asks no question when every field is
+ * already filled (`nextField === null`) (Req 8.4, 9.3).
+ */
+function buildGenerateReplyMessages(
+	state: Pick<TurnState, "inboundText" | "currentFields" | "nextField">,
+): [SystemMessage, HumanMessage] {
+	const known = JSON.stringify(state.currentFields);
+	const ask =
+		state.nextField === null
+			? "All qualification fields are already collected; do not ask a new " +
+				"qualifying question — acknowledge the lead and keep the conversation warm."
+			: `Ask the lead about exactly this one field: ${state.nextField}.`;
+	return [
+		new SystemMessage(GENERATE_REPLY_SYSTEM_PROMPT),
+		new HumanMessage(
+			`Available data (the only facts you may assert): ${known}\n` +
+				`Lead message: ${state.inboundText}\n` +
+				ask,
+		),
+	];
+}
+
+/**
+ * Create the `generate_reply` graph node (Req 8.1, 8.2, 8.4).
+ *
+ * The node performs a `model.withStructuredOutput(AgentOutputSchema)` call to
+ * produce the "Marko" persona reply, filling {@link TurnState.candidate}. The
+ * prompt incorporates the inbound text, the Lead's current fields, and the
+ * single {@link TurnState.nextField} chosen by `select_next_question`, so the
+ * reply asks about that one field and carries at most one question (Req 8.4).
+ * Persona and honesty rules (confirm being an AI when asked — Req 8.2; never
+ * assert consórcio rate/group/contemplation facts absent from the available
+ * data — Req 8.6) are framed in {@link GENERATE_REPLY_SYSTEM_PROMPT}; the
+ * downstream {@link createGuardNode} additionally repairs or rejects any reply
+ * that violates the one-question or no-unsupported-facts rules (Req 8.4, 8.6).
+ *
+ * @param model - The injectable LangChain.js chat model (a fake in tests).
+ * @returns A node mapping a {@link TurnState} to the `candidate` reply update.
+ */
+export function createGenerateReplyNode(
+	model: BaseChatModel,
+): (
+	state: Pick<TurnState, "inboundText" | "currentFields" | "nextField">,
+) => Promise<Pick<TurnState, "candidate">> {
+	const structuredModel = model.withStructuredOutput(AgentOutputSchema, {
+		name: "generate_reply",
+	});
+	return async function generateReply(
+		state: Pick<TurnState, "inboundText" | "currentFields" | "nextField">,
+	): Promise<Pick<TurnState, "candidate">> {
+		const candidate = (await structuredModel.invoke(
+			buildGenerateReplyMessages(state),
+		)) as AgentOutput;
+		return { candidate };
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Graph node: guard (Req 8.4, 8.6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Count the number of questions a candidate reply contains, taken as the number
+ * of `?` characters in the text (Req 8.4). A reply is within the one-question
+ * limit when this count is at most one.
+ *
+ * @param reply - The candidate reply text.
+ * @returns The number of `?` occurrences in the reply.
+ */
+export function countQuestions(reply: string): number {
+	let count = 0;
+	for (const char of reply) {
+		if (char === "?") count += 1;
+	}
+	return count;
+}
+
+/**
+ * Truncate a reply to keep only its first question (Req 8.4). Everything up to
+ * and including the first `?` is retained and trailing content after it is
+ * dropped, so a reply that asked several questions is repaired down to a single
+ * one. A reply with no `?` is returned unchanged.
+ *
+ * @param reply - The candidate reply text.
+ * @returns The reply truncated to its first question, trimmed of trailing space.
+ */
+export function truncateToFirstQuestion(reply: string): string {
+	const firstMark = reply.indexOf("?");
+	if (firstMark === -1) return reply;
+	return reply.slice(0, firstMark + 1).trimEnd();
+}
+
+/**
+ * Normalize the Lead's available qualification data into a single lowercase
+ * string of its non-null field values, used by {@link findUnsupportedFacts} to
+ * decide whether a factual token the reply asserts is backed by data (Req 8.6).
+ * A `null` field contributes nothing, so it can never support an assertion.
+ *
+ * @param data - The Lead's available qualification fields.
+ * @returns A lowercase, space-joined string of the present field values.
+ */
+export function availableDataText(data: QualificationFields): string {
+	const parts: string[] = [];
+	if (data.segment != null) parts.push(String(data.segment));
+	if (data.creditValue != null) parts.push(String(data.creditValue));
+	if (data.objective != null) parts.push(String(data.objective));
+	if (data.hasLanceReserve != null) parts.push(String(data.hasLanceReserve));
+	if (data.income != null) parts.push(String(data.income));
+	return parts.join(" ").toLowerCase();
+}
+
+/**
+ * Find the factual tokens a reply asserts that are NOT supported by the Lead's
+ * available data (Req 8.6). A token is supported when, after lowercasing and
+ * trimming, it is a non-empty substring of {@link availableDataText}; any
+ * asserted token absent from the available data — a consórcio rate, group
+ * detail, or contemplation outcome the agent does not actually hold — is
+ * returned as unsupported so the guard can reject the reply.
+ *
+ * Pure and total: a function of its inputs with no I/O.
+ *
+ * @param assertedFacts - The factual tokens the candidate reply asserts.
+ * @param data - The Lead's available qualification fields.
+ * @returns The subset of `assertedFacts` not backed by the available data.
+ */
+export function findUnsupportedFacts(
+	assertedFacts: readonly string[],
+	data: QualificationFields,
+): string[] {
+	const available = availableDataText(data);
+	return assertedFacts.filter((fact) => {
+		const token = fact.trim().toLowerCase();
+		if (token.length === 0) return false;
+		return !available.includes(token);
+	});
+}
+
+/**
+ * The outcome of {@link guardReply}: the reply is accepted unchanged, repaired
+ * into a safe reply, or rejected because it cannot be made safe (Req 8.4, 8.6).
+ *
+ *   - `"accept"` — the reply already has at most one question and asserts only
+ *     supported facts; `reply` is the original, unchanged.
+ *   - `"repair"` — the reply exceeded one question but asserts only supported
+ *     facts; `reply` is the original truncated to its first question (Req 8.4).
+ *   - `"reject"` — the reply asserts one or more facts absent from the Lead's
+ *     available data, which cannot be safely stripped from free text, so the
+ *     reply must not be sent; `unsupportedFacts` lists the offending tokens
+ *     (Req 8.6).
+ */
+export type ReplyGuardResult =
+	| { decision: "accept"; reply: AgentOutput }
+	| { decision: "repair"; reply: AgentOutput }
+	| { decision: "reject"; unsupportedFacts: string[] };
+
+/**
+ * The honesty / one-question guard over a candidate reply (Req 8.4, 8.6).
+ *
+ * Decides whether a candidate {@link AgentOutput} may be sent against the Lead's
+ * available data:
+ *
+ *   1. If the reply asserts any fact absent from the available data, it is
+ *      REJECTED — an unsupported consórcio rate, group, or contemplation claim
+ *      cannot be reliably stripped from free-text prose, so the reply is not
+ *      sent (Req 8.6).
+ *   2. Otherwise, if the reply contains more than one question, it is REPAIRED
+ *      by truncating to its first question (Req 8.4).
+ *   3. Otherwise the reply is ACCEPTED unchanged.
+ *
+ * Pure and total: a function of the candidate and the available data with no
+ * I/O, so it is unit-testable in isolation from the graph.
+ *
+ * @param candidate - The reply produced by `generate_reply`.
+ * @param data - The Lead's available qualification fields.
+ * @returns The guard decision and the resulting (possibly repaired) reply.
+ */
+export function guardReply(
+	candidate: AgentOutput,
+	data: QualificationFields,
+): ReplyGuardResult {
+	const unsupportedFacts = findUnsupportedFacts(candidate.assertedFacts, data);
+	if (unsupportedFacts.length > 0) {
+		return { decision: "reject", unsupportedFacts };
+	}
+	if (countQuestions(candidate.reply) > 1) {
+		return {
+			decision: "repair",
+			reply: { ...candidate, reply: truncateToFirstQuestion(candidate.reply) },
+		};
+	}
+	return { decision: "accept", reply: candidate };
+}
+
+/**
+ * Create the `guard` graph node (Req 8.4, 8.6).
+ *
+ * The node post-processes {@link TurnState.candidate} through the pure
+ * {@link guardReply} against the Lead's {@link TurnState.currentFields} (the
+ * agent's available data) and threads the guarded reply back into
+ * {@link TurnState.candidate}:
+ *
+ *   - an accepted reply passes through unchanged;
+ *   - a reply with more than one question is repaired down to its first
+ *     question before it can be sent (Req 8.4);
+ *   - a reply asserting facts absent from the available data is rejected — the
+ *     candidate's text is blanked and its `assertedFacts` cleared so no
+ *     unsupported consórcio rate/group/contemplation claim is ever sent
+ *     (Req 8.6). The honesty/handoff flags are preserved so downstream routing
+ *     still observes them.
+ *
+ * The node performs no I/O and no model call.
+ *
+ * @returns A node mapping a {@link TurnState} to the guarded `candidate` update.
+ */
+export function createGuardNode(): (
+	state: Pick<TurnState, "candidate" | "currentFields">,
+) => Promise<Pick<TurnState, "candidate">> {
+	return async function guard(
+		state: Pick<TurnState, "candidate" | "currentFields">,
+	): Promise<Pick<TurnState, "candidate">> {
+		const result = guardReply(state.candidate, state.currentFields);
+		if (result.decision === "reject") {
+			// The reply asserts unsupported facts that cannot be safely stripped
+			// from free text: emit nothing while preserving the honesty/handoff
+			// flags for downstream routing (Req 8.6).
+			return {
+				candidate: { ...state.candidate, reply: "", assertedFacts: [] },
+			};
+		}
+		return { candidate: result.reply };
+	};
+}
+
 /**
  * Build the compiled qualification-turn graph behind the {@link QualificationAgent}
  * boundary (Req 8.1, 9.2).
