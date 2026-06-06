@@ -234,7 +234,7 @@ Each of the 24 correctness properties from the design is realized by exactly one
     - **Property 13: Field extraction persists progressively and monotonically**
     - **Validates: Requirements 9.2, 9.4, 9.5**
 
-  - [ ] 20.4 Implement the `select_next_question` node
+  - [x] 20.4 Implement the `select_next_question` node
     - Choose a single currently-null qualification field, or select none when all fields are filled
     - _Requirements: 9.3_
 

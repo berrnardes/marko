@@ -308,6 +308,71 @@ export function createPersistFieldsNode(
 	};
 }
 
+// ---------------------------------------------------------------------------
+// Graph node: select_next_question (Req 9.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * The deterministic order in which qualification fields are asked about. The
+ * `select_next_question` node walks this order and picks the first field that
+ * is still `null`, so a Lead is asked about its missing data in a stable,
+ * documented sequence rather than an arbitrary one (Req 9.3). The order mirrors
+ * the declaration order of {@link QualificationFields} in `@/core/types`:
+ * `segment` → `creditValue` → `objective` → `hasLanceReserve` → `income`.
+ */
+const QUALIFICATION_FIELD_ORDER: readonly (keyof QualificationFields)[] = [
+	"segment",
+	"creditValue",
+	"objective",
+	"hasLanceReserve",
+	"income",
+];
+
+/**
+ * Choose the single qualification field to ask about next, or `null` when the
+ * Lead's field set is fully filled (Req 9.3).
+ *
+ * This is a pure selection over the Lead's current fields — no LLM call. It
+ * returns the first field in {@link QUALIFICATION_FIELD_ORDER} whose value is
+ * still `null`, guaranteeing the chosen field is always one that is currently
+ * unfilled; when every field is set it returns `null` so no question is asked
+ * (Req 9.3). A field's value is "filled" when it is not `null`, so a
+ * volunteered boolean `false` or numeric `0` counts as answered.
+ *
+ * @param fields - The Lead's already-known qualification field set.
+ * @returns The first unfilled field in order, or `null` when all are filled.
+ */
+export function selectNextQuestionField(
+	fields: QualificationFields,
+): keyof QualificationFields | null {
+	for (const field of QUALIFICATION_FIELD_ORDER) {
+		if (fields[field] === null) return field;
+	}
+	return null;
+}
+
+/**
+ * Create the `select_next_question` graph node (Req 9.3).
+ *
+ * The node reads the Lead's current qualification fields and, via the pure
+ * {@link selectNextQuestionField}, sets {@link TurnState.nextField} to a single
+ * field that is still `null` — or to `null` when all fields are filled, so the
+ * downstream reply asks no further question (Req 9.3). The decision is a
+ * deterministic selection over the current fields and performs no I/O and no
+ * model call.
+ *
+ * @returns A node mapping a {@link TurnState} to the `nextField` update.
+ */
+export function createSelectNextQuestionNode(): (
+	state: Pick<TurnState, "currentFields">,
+) => Promise<Pick<TurnState, "nextField">> {
+	return async function selectNextQuestion(
+		state: Pick<TurnState, "currentFields">,
+	): Promise<Pick<TurnState, "nextField">> {
+		return { nextField: selectNextQuestionField(state.currentFields) };
+	};
+}
+
 /**
  * Build the compiled qualification-turn graph behind the {@link QualificationAgent}
  * boundary (Req 8.1, 9.2).
