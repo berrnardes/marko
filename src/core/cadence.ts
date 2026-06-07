@@ -21,6 +21,40 @@ import type { Touch } from "./types";
 /** Milliseconds in one 24-hour day, used to offset cadence fire times. */
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
+// ---------------------------------------------------------------------------
+// Test-mode configuration (env-driven, non-destructive)
+// ---------------------------------------------------------------------------
+
+/**
+ * When `CADENCE_TEST_MODE=1` is set, the cadence runs on a compressed timeline
+ * for real-world functional testing:
+ *
+ *   - Offsets are in **seconds** (T1 → 0 s immediate, T2 → 10 s, T3 → 20 s)
+ *     so the full cadence completes in under a minute with short delays between
+ *     touches.
+ *   - Only three touches (T1–T3) are meaningful; T4 and T5 are collapsed to the
+ *     same offset as T3 so they fire immediately after it if still scheduled,
+ *     but the scheduler can be limited to 3 touches via {@link CADENCE_TOUCHES_COUNT}.
+ *
+ * This is intended **exclusively for local/staging functional tests** against a
+ * real database and WAHA instance. Production deploys MUST NOT set this flag.
+ */
+export const CADENCE_TEST_MODE =
+	process.env.CADENCE_TEST_MODE === "1" ||
+	process.env.CADENCE_TEST_MODE === "true";
+
+/**
+ * In test mode the offsets are expressed in seconds (the unit multiplier is
+ * 1 000 ms); in production they are expressed in days (86 400 000 ms).
+ */
+const OFFSET_UNIT_MS = CADENCE_TEST_MODE ? 1_000 : MS_PER_DAY;
+
+/**
+ * The number of cadence touches to schedule. In test mode this is reduced to 3
+ * for a faster feedback loop; in production the full 5-touch sequence is used.
+ */
+export const CADENCE_TOUCHES_COUNT: number = CADENCE_TEST_MODE ? 3 : 5;
+
 /**
  * The fixed per-touch day offset, measured relative to the Lead's enrollment
  * time — the single source of truth for the cadence schedule (Req 3.3).
@@ -40,14 +74,15 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
  * Cadence_Scheduler remains free to add jitter within the 14–15 window when it
  * materializes the job; the deterministic core anchors that window at its
  * lower edge.
+ *
+ * In **test mode** (`CADENCE_TEST_MODE=1`), offsets are in seconds:
+ *   - T1 → 0 s (immediate), T2 → 10 s, T3 → 20 s, T4 → 30 s, T5 → 40 s
  */
-export const CADENCE_OFFSET_DAYS = {
-	T1: 0,
-	T2: 3,
-	T3: 7,
-	T4: 11,
-	T5: 14,
-} as const satisfies { [K in Touch]: number };
+export const CADENCE_OFFSET_DAYS = (
+	CADENCE_TEST_MODE
+		? { T1: 0, T2: 10, T3: 20, T4: 30, T5: 40 }
+		: { T1: 0, T2: 3, T3: 7, T4: 11, T5: 14 }
+) as { readonly [K in Touch]: number };
 
 /**
  * Compute the planned fire instant for a cadence touch, relative to the Lead's
@@ -87,8 +122,8 @@ export const CADENCE_OFFSET_DAYS = {
  * @returns A new `Date` for the touch's planned fire instant.
  */
 export function plannedFireTime(touch: Touch, enrolledAt: Date): Date {
-	const offsetDays = CADENCE_OFFSET_DAYS[touch];
-	return new Date(enrolledAt.getTime() + offsetDays * MS_PER_DAY);
+	const offset = CADENCE_OFFSET_DAYS[touch];
+	return new Date(enrolledAt.getTime() + offset * OFFSET_UNIT_MS);
 }
 
 /**

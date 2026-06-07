@@ -59,6 +59,13 @@ export interface WahaClient {
 		chatId: string,
 		messageIds: string[],
 	): Promise<void>;
+	/**
+	 * Resolve a WhatsApp hidden Linked ID (`@lid`) to its phone-number chat id
+	 * (`@c.us`) via WAHA's Lids API, or `null` when WAHA has no mapping (the
+	 * sender is unknown to the session / not in its contacts or groups). Used by
+	 * the inbound webhook to attribute a `@lid` sender to a real phone number.
+	 */
+	resolveLidToPhone(session: string, lid: string): Promise<string | null>;
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +232,7 @@ function readId(id: unknown): string | null {
  *   - `POST /api/{session}/presence` with `{ chatId, presence }`       (Req 17.2)
  *   - `POST /api/sendSeen` with `{ session, chatId, messageIds }`      (Req 17.3)
  *   - `GET  /api/contacts/check-exists?phone=&session=`  (chat-id resolution)
+ *   - `GET  /api/{session}/lids/{lid}`                   (LID → phone mapping)
  */
 export class HttpWahaClient implements WahaClient {
 	private readonly baseUrl: string;
@@ -302,6 +310,34 @@ export class HttpWahaClient implements WahaClient {
 	): Promise<void> {
 		const { session } = await this.resolveNumber(numberId);
 		await this.post("/api/sendSeen", { session, chatId, messageIds });
+	}
+
+	/** @inheritdoc */
+	async resolveLidToPhone(
+		session: string,
+		lid: string,
+	): Promise<string | null> {
+		// Accept either a bare lid number or a full `<digits>@lid` chat id; WAHA
+		// wants the `@` escaped (or just the digits), so strip to digits.
+		const digits = lid.replace(/\D+/g, "");
+		if (digits.length === 0) {
+			return null;
+		}
+		const path = `/api/${encodeURIComponent(session)}/lids/${digits}`;
+		let res: Response;
+		try {
+			res = await this.get(path);
+		} catch {
+			// WAHA returns non-2xx (e.g. 404) when it has no mapping for the lid;
+			// treat any failure as "unresolved" rather than throwing, so the webhook
+			// can decide how to handle an unattributable sender.
+			return null;
+		}
+		const payload = (await res.json()) as { pn?: unknown };
+		if (typeof payload?.pn === "string" && payload.pn.length > 0) {
+			return payload.pn;
+		}
+		return null;
 	}
 
 	// -- internals ----------------------------------------------------------

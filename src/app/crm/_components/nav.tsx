@@ -14,8 +14,8 @@ import { signOut } from "@/services/auth-client";
 
 const LINKS: ReadonlyArray<{ href: string; label: string }> = [
 	{ href: "/crm", label: "Leads" },
-	{ href: "/crm/import", label: "Import" },
-	{ href: "/crm/handoffs", label: "Handoffs" },
+	{ href: "/crm/import", label: "Importar" },
+	{ href: "/crm/handoffs", label: "Repasses" },
 ];
 
 /** Whether `href` is the active section for the current `pathname`. */
@@ -66,7 +66,7 @@ export function CrmNav({ email }: { email: string | null }) {
 						onClick={handleSignOut}
 						className="rounded-md border border-surface/30 px-3 py-1.5 text-surface/90 transition-colors hover:bg-surface/10 hover:text-white"
 					>
-						Sign out
+						Sair
 					</button>
 				</div>
 			</div>

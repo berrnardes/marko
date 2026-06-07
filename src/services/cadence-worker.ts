@@ -50,7 +50,10 @@ import {
 	type LifecycleManager,
 } from "@/services/lifecycle-manager";
 import type { OutboundSendQueue } from "@/services/outbound-worker";
-import type { LeadRepository } from "@/services/repositories";
+import type {
+	LeadRepository,
+	ScheduledJobRepository,
+} from "@/services/repositories";
 
 // ---------------------------------------------------------------------------
 // Nurture trigger seam
@@ -140,6 +143,16 @@ export interface CadenceWorkerConfig {
 	/** Seam that hands an exhausted lead to the monthly nurture flow (Req 6.2). */
 	nurture: NurtureTrigger;
 	/**
+	 * Mirror table for the lead's scheduled-job rows. When provided, the worker
+	 * advances the firing touch's mirror row out of `pending` after acting —
+	 * `done` on a send/exhaust, `skipped` when the State Guard stops the touch —
+	 * so the `scheduled_jobs` mirror reflects reality instead of leaving every
+	 * fired touch stuck at `pending` (which otherwise both misleads observability
+	 * and makes `cancelAll` reconsider already-fired touches). Optional: when
+	 * omitted (e.g. focused unit tests), the mirror is simply not updated.
+	 */
+	scheduledJobs?: ScheduledJobRepository;
+	/**
 	 * Pure message generator for the touch templates (Req 4.1–4.5). Defaults to
 	 * the shared pure {@link messageGenerator}; injectable so tests may supply a
 	 * fake renderer.
@@ -166,6 +179,7 @@ export class CadenceWorkerService implements CadenceWorker {
 	private readonly lifecycle: LifecycleManager;
 	private readonly nurture: NurtureTrigger;
 	private readonly messages: MessageGenerator;
+	private readonly scheduledJobs?: ScheduledJobRepository;
 
 	constructor(deps: CadenceWorkerConfig) {
 		this.leads = deps.leads;
@@ -174,6 +188,7 @@ export class CadenceWorkerService implements CadenceWorker {
 		this.lifecycle = deps.lifecycle;
 		this.nurture = deps.nurture;
 		this.messages = deps.messages ?? messageGenerator;
+		this.scheduledJobs = deps.scheduledJobs;
 	}
 
 	/** @inheritdoc */
@@ -194,6 +209,10 @@ export class CadenceWorkerService implements CadenceWorker {
 		//    skip the touch and cancel the lead's remaining cadence jobs so no later
 		//    touch fires either.
 		if (evaluateSendGuard(lead) === "skip_and_cancel") {
+			// Mark THIS touch's mirror row skipped before cancelling the rest, so it
+			// reads `skipped` (not `cancelled`) and is no longer `pending` when
+			// `cancelAll` sweeps the remaining touches.
+			await this.markTouch(leadId, touch, "skipped");
 			const cancelledJobs = await this.cadence.cancelAll(leadId);
 			return { status: "skipped", leadId, touch, cancelledJobs };
 		}
@@ -214,6 +233,11 @@ export class CadenceWorkerService implements CadenceWorker {
 			kind: "cadence",
 		});
 
+		// The touch has fired: advance its mirror row out of `pending` to `done`
+		// so the `scheduled_jobs` mirror reflects that this touch is no longer
+		// pending (Req 3.4 observability + accurate cancel-by-lead).
+		await this.markTouch(leadId, touch, "done");
+
 		// 4. T5 reached without an earlier reply/opt-out/block (the guard let it
 		//    through, Req 4.6): the breakup message is now enqueued; exhaust the
 		//    cadence (Req 6.1) and hand the lead to the monthly nurture flow
@@ -229,6 +253,30 @@ export class CadenceWorkerService implements CadenceWorker {
 		}
 
 		return { status: "sent", leadId, touch, jobId };
+	}
+
+	/**
+	 * Advance the firing touch's mirror row(s) out of `pending` to `status`
+	 * (`done` after a send, `skipped` when the guard stops the touch). A no-op
+	 * when no {@link ScheduledJobRepository} was injected. Matches the lead's
+	 * pending `cadence` rows for this `touch`; tolerant of there being none (e.g.
+	 * a job whose mirror row was already swept), so it never throws on the hot
+	 * path.
+	 */
+	private async markTouch(
+		leadId: string,
+		touch: Touch,
+		status: "done" | "skipped",
+	): Promise<void> {
+		if (!this.scheduledJobs) {
+			return;
+		}
+		const pending = await this.scheduledJobs.listByLead(leadId, "pending");
+		for (const row of pending) {
+			if (row.jobKind === "cadence" && row.touch === touch) {
+				await this.scheduledJobs.updateStatus(row.id, status);
+			}
+		}
 	}
 }
 

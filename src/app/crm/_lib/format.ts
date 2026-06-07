@@ -40,14 +40,14 @@ export function formatText(value: string | null): string {
 
 /** Human-readable labels for the lifecycle states (Req 20.1). */
 export const LIFECYCLE_LABELS: Record<LifecycleState, string> = {
-	COLD_QUEUED: "Cold (queued)",
-	IN_CADENCE: "In cadence",
-	REPLIED: "Replied",
-	QUALIFYING: "Qualifying",
-	HOT: "Hot",
-	WARM: "Warm",
-	DISQUALIFIED: "Disqualified",
-	CADENCE_EXHAUSTED: "Cadence exhausted",
-	MONTHLY_NURTURE: "Monthly nurture",
-	OPTED_OUT: "Opted out",
+	COLD_QUEUED: "Frio (na fila)",
+	IN_CADENCE: "Em cadência",
+	REPLIED: "Respondeu",
+	QUALIFYING: "Qualificando",
+	HOT: "Quente",
+	WARM: "Morno",
+	DISQUALIFIED: "Desqualificado",
+	CADENCE_EXHAUSTED: "Cadência esgotada",
+	MONTHLY_NURTURE: "Nutrição mensal",
+	OPTED_OUT: "Optou por sair",
 };

@@ -24,14 +24,14 @@ export default function LeadListPage() {
 		<div>
 			<PageHeader
 				title="Leads"
-				description="All leads with their current lifecycle state and score."
+				description="Todos os leads com seu estado de ciclo de vida e pontuação atuais."
 			/>
 
-			{isPending ? <StatusNote>Loading leads…</StatusNote> : null}
+			{isPending ? <StatusNote>Carregando leads…</StatusNote> : null}
 			{isError ? <StatusNote tone="error">{error.message}</StatusNote> : null}
 
 			{leads && leads.length === 0 ? (
-				<StatusNote>No leads yet. Import a CSV to get started.</StatusNote>
+				<StatusNote>Nenhum lead ainda. Importe um CSV para começar.</StatusNote>
 			) : null}
 
 			{leads && leads.length > 0 ? (
@@ -39,11 +39,11 @@ export default function LeadListPage() {
 					<table className="w-full text-left text-sm">
 						<thead className="border-b border-ink/10 bg-surface/60 text-xs uppercase tracking-wide text-ink/50">
 							<tr>
-								<th className="px-4 py-3 font-medium">Phone</th>
-								<th className="px-4 py-3 font-medium">Source</th>
-								<th className="px-4 py-3 font-medium">State</th>
-								<th className="px-4 py-3 font-medium">Score</th>
-								<th className="px-4 py-3 font-medium">Updated</th>
+								<th className="px-4 py-3 font-medium">Telefone</th>
+								<th className="px-4 py-3 font-medium">Origem</th>
+								<th className="px-4 py-3 font-medium">Estado</th>
+								<th className="px-4 py-3 font-medium">Pontuação</th>
+								<th className="px-4 py-3 font-medium">Atualizado</th>
 							</tr>
 						</thead>
 						<tbody className="divide-y divide-ink/5">

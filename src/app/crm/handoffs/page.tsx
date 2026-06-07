@@ -33,15 +33,15 @@ export default function HandoffsPage() {
 	return (
 		<div>
 			<PageHeader
-				title="Handoffs"
-				description="Leads transferred to a consultant, with their collected data and full conversation history."
+				title="Repasses"
+				description="Leads transferidos para um consultor, com seus dados coletados e histórico completo de conversa."
 			/>
 
-			{isPending ? <StatusNote>Loading handed-off leads…</StatusNote> : null}
+			{isPending ? <StatusNote>Carregando leads repassados…</StatusNote> : null}
 			{isError ? <StatusNote tone="error">{error.message}</StatusNote> : null}
 
 			{leads && leads.length === 0 ? (
-				<StatusNote>No leads have been handed off yet.</StatusNote>
+				<StatusNote>Nenhum lead foi repassado ainda.</StatusNote>
 			) : null}
 
 			{leads && leads.length > 0 ? (

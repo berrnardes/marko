@@ -61,8 +61,8 @@ export const WAHA_HMAC_HEADER = "x-webhook-hmac";
 /** The HMAC digest algorithm WAHA uses for webhook signing (Req 7.1). */
 const HMAC_ALGORITHM = "sha512";
 
-/** The only WAHA webhook event this route handles (Req 7.1). */
-const HANDLED_EVENT = "message";
+/** The WAHA webhook events this route handles (Req 7.1). */
+const HANDLED_EVENTS = ["message", "message.any"] as const;
 
 // ---------------------------------------------------------------------------
 // Request-body schema (untrusted input — design "treated as untrusted input")
@@ -81,21 +81,38 @@ export const WahaMessagePayloadSchema = z.looseObject({
 	id: z.string().min(1),
 	/** Raw WhatsApp sender id (e.g. `"5511999999999@c.us"`), normalized later. */
 	from: z.string().min(1),
-	/** The inbound message text. */
-	body: z.string(),
+	/** The inbound message text (may be empty for media-only messages). */
+	body: z.string().default(""),
 	/** Receipt time as WAHA epoch SECONDS. */
 	timestamp: z.number(),
+	/** Whether the message was sent by the session itself (outbound echo). */
+	fromMe: z.boolean().optional(),
+});
+
+/**
+ * The WAHA webhook envelope — the outer shape common to every event WAHA
+ * delivers. We validate this first to read `event`/`session` so we can cleanly
+ * IGNORE (ack with 200) the many non-message events WAHA fires (`session.status`,
+ * `message.ack`, `presence.update`, …) instead of 400-rejecting them, which
+ * would make WAHA retry. Permissive (`z.looseObject`) so extra fields pass.
+ */
+export const WahaEnvelopeSchema = z.looseObject({
+	event: z.string().min(1),
+	session: z.string().min(1),
 });
 
 /**
  * The WAHA webhook envelope for an inbound `message` event (Req 7.1). `event`
- * is pinned to `"message"` so non-message events (presence, status, …) are
- * rejected as malformed for this route; `session` is the WAHA session that
+ * accepts both `"message"` and `"message.any"` — WAHA fires `message.any` for
+ * all messages including the session's own outbound echoes, while `message`
+ * fires only for inbound. We accept both so the webhook works regardless of
+ * which event the session's webhook config subscribes to; outbound echoes
+ * (`fromMe: true`) are filtered downstream. `session` is the WAHA session that
  * received the message, carried through to the worker so it can resolve the
  * receiving WhatsApp number. Permissive (`z.looseObject`) on the envelope too.
  */
 export const WahaMessageWebhookSchema = z.looseObject({
-	event: z.literal(HANDLED_EVENT),
+	event: z.enum(HANDLED_EVENTS),
 	session: z.string().min(1),
 	payload: WahaMessagePayloadSchema,
 });
@@ -123,7 +140,11 @@ export interface InboundProcessingJob {
 	messageId: string;
 	/** WAHA message id; the at-least-once idempotency key. */
 	waMessageId: string;
-	/** Raw WhatsApp sender id, normalized to E.164 by the pipeline. */
+	/**
+	 * Sender chat id, normalized to E.164 by the pipeline. A `@lid` sender is
+	 * resolved to its phone-number chat id (`@c.us`) at the webhook before being
+	 * enqueued, so this always carries phone digits.
+	 */
 	from: string;
 	/** The inbound message text. */
 	text: string;
@@ -169,11 +190,34 @@ export interface WahaWebhookDeps {
 	/** Durable enqueue seam onto the inbound processing pipeline (Req 7.1). */
 	queue: InboundProcessingQueue;
 	/**
+	 * Resolve a WhatsApp hidden Linked ID (`@lid`) sender to its phone-number
+	 * chat id (`@c.us`) — WAHA's WEBJS/GOWS engines now deliver `from` as a
+	 * `@lid` for many senders (WhatsApp's LID privacy migration), which carries
+	 * no phone digits. When the sender is a `@lid`, the webhook resolves it here
+	 * before normalizing to E.164. Injected (not the concrete WAHA client) so the
+	 * service stays testable; backed by {@link import("./waha-client").WahaClient.resolveLidToPhone}
+	 * in production. Optional: when absent, a `@lid` sender is treated as
+	 * unattributable.
+	 */
+	lids?: LidResolver;
+	/**
 	 * Source recorded on a Lead created from an unknown inbound sender (Req 7.5).
 	 * Defaults to {@link DEFAULT_INBOUND_WEBHOOK_SOURCE}.
 	 */
 	inboundSource?: string;
 }
+
+/** Seam resolving a WhatsApp `@lid` to a phone-number chat id (`@c.us`). */
+export interface LidResolver {
+	/**
+	 * Resolve `lid` (within `session`) to a phone-number chat id, or `null` when
+	 * WAHA has no mapping (sender unknown to the session).
+	 */
+	resolveLidToPhone(session: string, lid: string): Promise<string | null>;
+}
+
+/** WhatsApp hidden Linked-ID chat-id suffix (e.g. `"96817169588265@lid"`). */
+const LID_SUFFIX = "@lid";
 
 /** Default `source` for a Lead first seen via the inbound webhook (Req 7.5). */
 export const DEFAULT_INBOUND_WEBHOOK_SOURCE = "whatsapp_inbound";
@@ -184,12 +228,12 @@ export const DEFAULT_INBOUND_WEBHOOK_SOURCE = "whatsapp_inbound";
  * JSON acknowledgement payload.
  */
 export interface WebhookResult {
-	/** HTTP status: `401` (bad signature), `400` (malformed), or `200` (accepted/duplicate). */
+	/** HTTP status: `401` (bad signature), `400` (malformed), or `200` (accepted/duplicate/ignored). */
 	status: 401 | 400 | 200;
 	/** JSON acknowledgement body. */
 	body: {
 		ok: boolean;
-		status: "accepted" | "duplicate" | "rejected";
+		status: "accepted" | "duplicate" | "rejected" | "ignored";
 		reason?: string;
 	};
 }
@@ -293,6 +337,20 @@ export async function processWahaWebhook(
 	}
 	const result = WahaMessageWebhookSchema.safeParse(parsed);
 	if (!result.success) {
+		// The body parsed as JSON but is not a `message`/`message.any` event we
+		// handle. Distinguish two cases:
+		//   - A non-message event (`session.status`, `message.ack`, presence, …):
+		//     WAHA legitimately fires many event types at this URL. ACK with 200
+		//     `"ignored"` so WAHA does not retry and the logs stay quiet.
+		//   - A genuinely malformed `message` event (right event, bad payload):
+		//     reject with 400 so the misconfiguration is visible.
+		const envelope = WahaEnvelopeSchema.safeParse(parsed);
+		if (
+			envelope.success &&
+			!(HANDLED_EVENTS as readonly string[]).includes(envelope.data.event)
+		) {
+			return { status: 200, body: { ok: true, status: "ignored" } };
+		}
 		return {
 			status: 400,
 			body: { ok: false, status: "rejected", reason: "invalid_body" },
@@ -300,6 +358,14 @@ export async function processWahaWebhook(
 	}
 	const { session, payload } = result.data;
 	const waMessageId = payload.id;
+
+	// 2b. Skip outbound echoes (Req 7.1). WAHA fires `message.any` for both
+	//     inbound AND the session's own sends. Messages with `fromMe: true` are
+	//     the session's outbound echoes and must not be processed as inbound;
+	//     acknowledge them with 200 so WAHA does not retry.
+	if (payload.fromMe) {
+		return { status: 200, body: { ok: true, status: "accepted" } };
+	}
 
 	// 3. Idempotency by `wa_message_id` (Req 7.4). WAHA retries deliveries, so a
 	//    message already persisted is acknowledged fast and NOT re-processed.
@@ -313,7 +379,25 @@ export async function processWahaWebhook(
 	//    normalize the sender to E.164 (the same pure rule the importer uses so
 	//    the dedup key matches) and find-or-create the Lead (Req 7.1, 7.5). A
 	//    sender that cannot be normalized is malformed for attribution → 400.
-	const phoneE164 = normalizePhone(payload.from, "BR");
+	//
+	//    WhatsApp's LID migration: WAHA may deliver `from` as a hidden Linked ID
+	//    (`<digits>@lid`) that carries no phone digits. Resolve it to a real
+	//    phone-number chat id via the injected Lids resolver before normalizing;
+	//    an unresolvable `@lid` (sender unknown to the session) is unattributable.
+	let senderChatId = payload.from;
+	if (senderChatId.endsWith(LID_SUFFIX)) {
+		const resolved = deps.lids
+			? await deps.lids.resolveLidToPhone(session, senderChatId)
+			: null;
+		if (resolved === null) {
+			return {
+				status: 400,
+				body: { ok: false, status: "rejected", reason: "unresolved_lid" },
+			};
+		}
+		senderChatId = resolved;
+	}
+	const phoneE164 = normalizePhone(senderChatId, "BR");
 	if (phoneE164 === null) {
 		return {
 			status: 400,
@@ -349,7 +433,7 @@ export async function processWahaWebhook(
 		leadId: lead.id,
 		messageId: persisted.id,
 		waMessageId,
-		from: payload.from,
+		from: senderChatId,
 		text: payload.body,
 		receivedAt,
 		session,

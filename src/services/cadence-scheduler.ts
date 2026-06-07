@@ -23,7 +23,11 @@
 // The per-touch fire instants come from the pure `plannedFireTime` in
 // `@/core/cadence` (Req 3.3); none of that timing math is reimplemented here.
 
-import { CADENCE_OFFSET_DAYS, plannedFireTime } from "@/core/cadence";
+import {
+	CADENCE_OFFSET_DAYS,
+	CADENCE_TOUCHES_COUNT,
+	plannedFireTime,
+} from "@/core/cadence";
 import type { LifecycleState, Touch } from "@/core/types";
 import type { LifecycleManager } from "@/services/lifecycle-manager";
 import type { ScheduledJobRepository } from "@/services/repositories";
@@ -171,14 +175,13 @@ export interface CadenceSchedulerConfig {
  * one delayed job per entry, in this order, so the returned schedule is ordered
  * T1 → T5 and the planned fire times are strictly increasing (the offsets in
  * {@link CADENCE_OFFSET_DAYS} are strictly increasing — design Property 5).
+ *
+ * In test mode (`CADENCE_TEST_MODE=1`) the list is truncated to
+ * {@link CADENCE_TOUCHES_COUNT} entries for a faster feedback loop.
  */
-const CADENCE_TOUCHES = [
-	"T1",
-	"T2",
-	"T3",
-	"T4",
-	"T5",
-] as const satisfies readonly Touch[];
+const CADENCE_TOUCHES = (
+	["T1", "T2", "T3", "T4", "T5"] as const satisfies readonly Touch[]
+).slice(0, CADENCE_TOUCHES_COUNT) as readonly Touch[];
 
 // ---------------------------------------------------------------------------
 // CadenceSchedulerService
@@ -212,6 +215,7 @@ export class CadenceSchedulerService implements CadenceScheduler {
 		// twice. A rejected transition means the lead was not `COLD_QUEUED`; we
 		// refuse to schedule touches and surface the actual state.
 		const result = await this.lifecycle.apply(leadId, "IN_CADENCE");
+
 		if (!result.ok) {
 			throw new CadenceEnrollmentError(leadId, result.state);
 		}

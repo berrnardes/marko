@@ -32,7 +32,7 @@ export function LoginForm() {
 		setPending(false);
 
 		if (signInError) {
-			setError(signInError.message ?? "Sign-in failed");
+			setError(signInError.message ?? "Falha ao entrar");
 			return;
 		}
 
@@ -43,7 +43,7 @@ export function LoginForm() {
 	return (
 		<form onSubmit={handleSubmit} className="flex w-72 flex-col gap-3">
 			<label className="flex flex-col gap-1 text-sm">
-				Email
+				E-mail
 				<input
 					type="email"
 					required
@@ -54,7 +54,7 @@ export function LoginForm() {
 				/>
 			</label>
 			<label className="flex flex-col gap-1 text-sm">
-				Password
+				Senha
 				<input
 					type="password"
 					required
@@ -70,7 +70,7 @@ export function LoginForm() {
 				disabled={pending}
 				className="rounded bg-black px-3 py-1.5 text-sm text-white disabled:opacity-50"
 			>
-				{pending ? "Signing in…" : "Sign in"}
+				{pending ? "Entrando…" : "Entrar"}
 			</button>
 		</form>
 	);

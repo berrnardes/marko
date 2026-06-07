@@ -44,9 +44,9 @@ function ReportRows({ report }: { report: ImportReportView }) {
 			<table className="w-full text-left text-sm">
 				<thead className="border-b border-ink/10 bg-surface/60 text-xs uppercase tracking-wide text-ink/50">
 					<tr>
-						<th className="px-4 py-2 font-medium">Row</th>
-						<th className="px-4 py-2 font-medium">Outcome</th>
-						<th className="px-4 py-2 font-medium">Detail</th>
+						<th className="px-4 py-2 font-medium">Linha</th>
+						<th className="px-4 py-2 font-medium">Resultado</th>
+						<th className="px-4 py-2 font-medium">Detalhe</th>
 					</tr>
 				</thead>
 				<tbody className="divide-y divide-ink/5">
@@ -93,14 +93,14 @@ export default function ImportPage() {
 	return (
 		<div>
 			<PageHeader
-				title="Import leads"
-				description="Upload a CSV of cold leads. Each row is normalized and deduplicated; the result report is shown below."
+				title="Importar leads"
+				description="Envie um CSV de leads frios. Cada linha é normalizada e deduplicada; o relatório é exibido abaixo."
 			/>
 
 			<Card className="mb-6">
 				<form onSubmit={handleSubmit} className="flex flex-col gap-4">
 					<label className="flex flex-col gap-2 text-sm">
-						<span className="font-medium text-ink">CSV file</span>
+						<span className="font-medium text-ink">Arquivo CSV</span>
 						<input
 							type="file"
 							accept=".csv,text/csv"
@@ -117,7 +117,7 @@ export default function ImportPage() {
 							disabled={!file || importCsv.isPending}
 							className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
 						>
-							{importCsv.isPending ? "Importing…" : "Import CSV"}
+							{importCsv.isPending ? "Importando…" : "Importar CSV"}
 						</button>
 					</div>
 				</form>
@@ -130,21 +130,21 @@ export default function ImportPage() {
 			{report ? (
 				<Card>
 					<h2 className="mb-4 font-display text-lg font-semibold text-primary">
-						Import result
+						Resultado da importação
 					</h2>
 					<div className="mb-5 grid grid-cols-3 gap-3">
 						<CountTile
-							label="Created"
+							label="Criados"
 							value={report.createdCount}
 							tone="created"
 						/>
 						<CountTile
-							label="Updated"
+							label="Atualizados"
 							value={report.updatedCount}
 							tone="updated"
 						/>
 						<CountTile
-							label="Rejected"
+							label="Rejeitados"
 							value={report.rejectedCount}
 							tone="rejected"
 						/>
@@ -152,7 +152,9 @@ export default function ImportPage() {
 					{report.rows.length > 0 ? (
 						<ReportRows report={report} />
 					) : (
-						<p className="text-sm text-ink/50">No rows in the uploaded file.</p>
+						<p className="text-sm text-ink/50">
+							Nenhuma linha no arquivo enviado.
+						</p>
 					)}
 				</Card>
 			) : null}

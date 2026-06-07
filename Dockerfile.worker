@@ -1,0 +1,34 @@
+# Dockerfile do worker (processo always-on de fila pg-boss).
+#
+# Constrói uma imagem enxuta que roda o entry point do worker
+# (`src/worker/index.ts`) via tsx. NÃO inclui o app Next.js — o worker e o app
+# compartilham os mesmos módulos de domínio, mas têm entry points distintos; o
+# app é hospedado na Vercel e este container roda apenas o consumidor da fila.
+#
+# As variáveis de ambiente (DATABASE_URL, WAHA_*, etc.) NÃO entram na imagem —
+# são injetadas em tempo de execução pelo docker-compose (env_file).
+
+FROM node:20-slim
+
+# Diretório de trabalho da aplicação dentro do container.
+WORKDIR /app
+
+# Ambiente de produção (afeta libs que checam NODE_ENV).
+ENV NODE_ENV=production
+
+# 1. Instala SOMENTE as dependências de produção. `tsx` está em `dependencies`
+#    (não em devDependencies), então ele entra mesmo com `--omit=dev`, mantendo
+#    a imagem pequena (sem eslint, vitest, drizzle-kit, etc.).
+#    O npm é alinhado ao usado em dev (11.x) para que `npm ci` aceite o lockfile
+#    — o npm 10 que vem na imagem base recusaria um lockfile escrito pelo 11.
+COPY package.json package-lock.json ./
+RUN npm install -g npm@11 && npm ci --omit=dev
+
+# 2. Copia o que o worker precisa em runtime: o tsconfig (de onde o tsx lê o
+#    alias de import `@/*`) e o código-fonte de domínio.
+COPY tsconfig.json ./
+COPY src ./src
+
+# 3. Sobe o worker. Usa `worker:start` (sem `--env-file`) porque as variáveis
+#    vêm do ambiente do container, não de um arquivo .env copiado para a imagem.
+CMD ["npm", "run", "worker:start"]

@@ -20,7 +20,11 @@ import {
 	type LifecycleManager,
 } from "@/services/lifecycle-manager";
 import type { OutboundSendQueue } from "@/services/outbound-worker";
-import type { LeadRepository } from "@/services/repositories";
+import type {
+	LeadRepository,
+	ScheduledJobRecord,
+	ScheduledJobRepository,
+} from "@/services/repositories";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -102,6 +106,37 @@ function lifecycleApplying(ok = true): LifecycleManager {
 /** Build a `NurtureTrigger` recording its `startMonthly` calls. */
 function nurtureTrigger(): NurtureTrigger {
 	return { startMonthly: vi.fn(async () => undefined) };
+}
+
+/**
+ * Build a `ScheduledJobRepository` exposing one pending `cadence` mirror row per
+ * touch in `touches`, and recording `updateStatus` calls so tests can assert the
+ * worker advances the firing touch out of `pending`.
+ */
+function scheduledJobsWithPending(
+	touches: Array<ScheduledJobRecord["touch"]>,
+): {
+	repo: ScheduledJobRepository;
+	rowIdFor: (touch: ScheduledJobRecord["touch"]) => string;
+} {
+	const rows: ScheduledJobRecord[] = touches.map((touch, i) => ({
+		id: `row-${touch}`,
+		leadId: "lead-1",
+		jobKind: "cadence",
+		touch,
+		pgbossJobId: `pgboss-${i}`,
+		plannedFor: FIXED_NOW,
+		status: "pending",
+	}));
+	const repo = {
+		create: vi.fn(),
+		listByLead: vi.fn(async (_leadId: string, status?: string) =>
+			status === undefined ? rows : rows.filter((r) => r.status === status),
+		),
+		updateStatus: vi.fn(async () => undefined),
+		cancelAllForLead: vi.fn(async () => 0),
+	} as unknown as ScheduledJobRepository;
+	return { repo, rowIdFor: (touch) => `row-${touch}` };
 }
 
 // ---------------------------------------------------------------------------
@@ -252,5 +287,41 @@ describe("CadenceWorker.process", () => {
 		await expect(
 			worker.process({ leadId: "lead-1", touch: "T1" }),
 		).rejects.toBeInstanceOf(UnknownLeadError);
+	});
+
+	it("advances the firing touch's mirror row to `done` on the send path", async () => {
+		const { repo } = scheduledJobsWithPending(["T1", "T2", "T3"]);
+		const worker = createCadenceWorker({
+			leads: leadRepoReturning(makeLead()),
+			cadence,
+			outbound,
+			lifecycle,
+			nurture,
+			scheduledJobs: repo,
+		});
+
+		await worker.process({ leadId: "lead-1", touch: "T1" });
+
+		expect(repo.updateStatus).toHaveBeenCalledWith("row-T1", "done");
+		// Only the firing touch's row is advanced — siblings stay pending.
+		expect(repo.updateStatus).toHaveBeenCalledTimes(1);
+	});
+
+	it("marks the firing touch's mirror row `skipped` when the guard stops it", async () => {
+		const { repo } = scheduledJobsWithPending(["T1", "T2", "T3"]);
+		const worker = createCadenceWorker({
+			leads: leadRepoReturning(makeLead({ lifecycleState: "REPLIED" })),
+			cadence,
+			outbound,
+			lifecycle,
+			nurture,
+			scheduledJobs: repo,
+		});
+
+		await worker.process({ leadId: "lead-1", touch: "T2" });
+
+		expect(repo.updateStatus).toHaveBeenCalledWith("row-T2", "skipped");
+		// The remaining touches are cancelled via the scheduler's cancelAll.
+		expect(cadence.cancelAll).toHaveBeenCalledWith("lead-1");
 	});
 });

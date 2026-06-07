@@ -1,0 +1,13 @@
+# Mantém o contexto de build pequeno e evita copiar artefatos/segredos.
+node_modules
+.next
+.git
+.env
+.env.*
+*.log
+coverage
+.vscode
+.kiro
+README.md
+SYSTEM_GUIDE.md
+docs

@@ -23,6 +23,7 @@
 
 import { PgBoss } from "pg-boss";
 
+import { CADENCE_TEST_MODE, CADENCE_TOUCHES_COUNT } from "@/core/cadence";
 import type { AntiBanConfig, Clock } from "@/core/types";
 import { DrizzleLeadRepository } from "@/db/lead-repository";
 import { DrizzleMessageRepository } from "@/db/message-repository";
@@ -71,6 +72,7 @@ import {
 import {
 	createWahaClient,
 	numberSessionResolverFromRepository,
+	type WahaClient,
 } from "@/services/waha-client";
 
 // ---------------------------------------------------------------------------
@@ -241,6 +243,7 @@ export interface Runtime {
 	messages: DrizzleMessageRepository;
 	numbers: DrizzleNumberRepository;
 	scheduledJobs: DrizzleScheduledJobRepository;
+	waha: WahaClient;
 	antiBan: AntiBanController;
 	cadenceScheduler: CadenceScheduler;
 	nurtureScheduler: NurtureScheduler;
@@ -266,6 +269,13 @@ const globalForRuntime = globalThis as unknown as {
 export function getRuntime(): Promise<Runtime> {
 	if (!globalForRuntime.__markoRuntime) {
 		globalForRuntime.__markoRuntime = (async () => {
+			if (CADENCE_TEST_MODE) {
+				console.warn(
+					"[runtime] ⚠️  CADENCE_TEST_MODE is ON — offsets are in seconds, touches limited to",
+					CADENCE_TOUCHES_COUNT,
+				);
+			}
+
 			const boss = await getBoss();
 			const antiBanConfig = defaultAntiBanConfig();
 			const clock: Clock = { now: () => new Date() };
@@ -314,6 +324,7 @@ export function getRuntime(): Promise<Runtime> {
 				outbound: outboundQueue,
 				lifecycle,
 				nurture: nurtureScheduler,
+				scheduledJobs,
 			});
 			const nurtureWorker = createNurtureWorker({
 				leads,
@@ -354,6 +365,7 @@ export function getRuntime(): Promise<Runtime> {
 				outboundQueue,
 				inboundQueue,
 				importer,
+				waha,
 			};
 		})();
 	}

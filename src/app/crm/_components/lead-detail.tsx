@@ -31,12 +31,12 @@ export function LeadHeader({ lead }: { lead: LeadDetailView }) {
 			<span className="text-sm text-ink/50">via {lead.source}</span>
 			{lead.optInStatus === "opt_out" ? (
 				<span className="rounded-full bg-ink px-2.5 py-0.5 text-xs font-medium text-white">
-					Opted out
+					Optou por sair
 				</span>
 			) : null}
 			{lead.blocked ? (
 				<span className="rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium text-white">
-					Blocked
+					Bloqueado
 				</span>
 			) : null}
 		</div>
@@ -62,20 +62,20 @@ export function QualificationCard({
 	return (
 		<Card>
 			<h2 className="mb-4 font-display text-lg font-semibold text-primary">
-				Qualification
+				Qualificação
 			</h2>
 			<dl className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-				<Field label="Segment" value={formatText(qualification.segment)} />
+				<Field label="Segmento" value={formatText(qualification.segment)} />
 				<Field
-					label="Credit value"
+					label="Valor do crédito"
 					value={formatCurrency(qualification.creditValue)}
 				/>
-				<Field label="Objective" value={formatText(qualification.objective)} />
+				<Field label="Objetivo" value={formatText(qualification.objective)} />
 				<Field
-					label="Lance reserve"
+					label="Reserva de lance"
 					value={formatBoolean(qualification.hasLanceReserve)}
 				/>
-				<Field label="Income" value={formatCurrency(qualification.income)} />
+				<Field label="Renda" value={formatCurrency(qualification.income)} />
 			</dl>
 		</Card>
 	);
@@ -109,10 +109,10 @@ export function MessageHistoryCard({ messages }: { messages: MessageView[] }) {
 	return (
 		<Card>
 			<h2 className="mb-4 font-display text-lg font-semibold text-primary">
-				Message history
+				Histórico de mensagens
 			</h2>
 			{messages.length === 0 ? (
-				<p className="text-sm text-ink/50">No messages yet.</p>
+				<p className="text-sm text-ink/50">Nenhuma mensagem ainda.</p>
 			) : (
 				<ul className="flex flex-col gap-2">
 					{messages.map((message) => (
@@ -126,9 +126,9 @@ export function MessageHistoryCard({ messages }: { messages: MessageView[] }) {
 
 /** Human-readable labels for handoff trigger reasons (Req 13.2). */
 const HANDOFF_REASON_LABELS: Record<HandoffEventView["reason"], string> = {
-	hot_score: "Score crossed 70 (hot)",
-	frustration: "Frustration detected",
-	out_of_data: "Asked for unavailable information",
+	hot_score: "Pontuação ultrapassou 70 (quente)",
+	frustration: "Frustração detectada",
+	out_of_data: "Solicitou informação indisponível",
 };
 
 /** The handoff events that transferred a lead to a consultant (Req 13.2, 20.4). */
@@ -136,10 +136,10 @@ export function HandoffEventsCard({ events }: { events: HandoffEventView[] }) {
 	return (
 		<Card>
 			<h2 className="mb-4 font-display text-lg font-semibold text-primary">
-				Handoff events
+				Eventos de repasse
 			</h2>
 			{events.length === 0 ? (
-				<p className="text-sm text-ink/50">No handoff events.</p>
+				<p className="text-sm text-ink/50">Nenhum evento de repasse.</p>
 			) : (
 				<ul className="flex flex-col gap-2 text-sm">
 					{events.map((event) => (

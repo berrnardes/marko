@@ -94,6 +94,7 @@ async function defaultWebhookDepsProvider(): Promise<WahaWebhookDeps> {
 		leads: runtime.leads,
 		messages: runtime.messages,
 		queue: runtime.inboundQueue,
+		lids: runtime.waha,
 	};
 }
 

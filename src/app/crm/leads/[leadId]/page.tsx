@@ -28,10 +28,10 @@ export default function LeadDetailPage({
 	return (
 		<div>
 			<Link href="/crm" className="text-sm text-primary hover:underline">
-				← Back to leads
+				← Voltar para leads
 			</Link>
 
-			{isPending ? <StatusNote>Loading lead…</StatusNote> : null}
+			{isPending ? <StatusNote>Carregando lead…</StatusNote> : null}
 			{isError ? <StatusNote tone="error">{error.message}</StatusNote> : null}
 
 			{lead ? (

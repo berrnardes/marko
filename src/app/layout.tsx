@@ -7,17 +7,11 @@
 // sparing use on headings.
 
 import type { Metadata } from "next";
-import { Fraunces, Hanken_Grotesk } from "next/font/google";
+import { Hanken_Grotesk } from "next/font/google";
 import "./globals.css";
 
 const hankenGrotesque = Hanken_Grotesk({
 	variable: "--font-hanken",
-	subsets: ["latin"],
-	display: "swap",
-});
-
-const fraunces = Fraunces({
-	variable: "--font-fraunces",
 	subsets: ["latin"],
 	display: "swap",
 });
@@ -35,7 +29,7 @@ export default function RootLayout({
 	return (
 		<html
 			lang="pt-BR"
-			className={`${hankenGrotesque.variable} ${fraunces.variable} h-full antialiased`}
+			className={`${hankenGrotesque.variable} h-full antialiased`}
 		>
 			<body className="min-h-full flex flex-col font-sans">{children}</body>
 		</html>

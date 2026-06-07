@@ -1,0 +1,55 @@
+# Stack always-on do Hetzner: WAHA (gateway WhatsApp) + worker (fila pg-boss).
+#
+# O app Next.js NÃO está aqui — ele é hospedado na Vercel. Esta máquina roda os
+# dois processos que a Vercel não consegue manter de pé: o WAHA (serviço
+# contínuo) e o worker (consumidor contínuo da fila no Postgres do Supabase).
+#
+# Os dois serviços ficam na mesma rede Docker, então o worker fala com o WAHA
+# pelo hostname interno `waha` (http://waha:3000) — sem expor essa porta à
+# internet além do necessário.
+#
+# Suba com:  docker compose --env-file .env.production up -d --build
+
+services:
+  waha:
+    image: devlikeapro/waha:latest
+    restart: unless-stopped
+    ports:
+      # Exponha a 3000 só se precisar acessar o dashboard/API do WAHA de fora.
+      # Em produção, prefira deixar atrás de um proxy reverso com TLS.
+      - "3000:3000"
+    environment:
+      # Chave de API do WAHA (mesma que o worker usa em WAHA_API_KEY).
+      - WHATSAPP_API_KEY=${WAHA_API_KEY}
+      # Para onde o WAHA entrega os eventos inbound: o webhook do app na Vercel.
+      - WHATSAPP_HOOK_URL=${WAHA_WEBHOOK_URL}
+      - WHATSAPP_HOOK_EVENTS=message
+    volumes:
+      # Persiste a sessão autenticada (QR code) entre reinícios do container.
+      - waha-sessions:/app/.sessions
+    networks:
+      - marko
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    restart: unless-stopped
+    # Carrega DATABASE_URL, WAHA_*, BETTER_AUTH_*, etc. do arquivo de produção.
+    env_file:
+      - .env.production
+    environment:
+      # Sobrescreve o endereço do WAHA para o hostname interno da rede Docker,
+      # independentemente do que estiver no .env.production.
+      - WAHA_BASE_URL=http://waha:3000
+    depends_on:
+      - waha
+    networks:
+      - marko
+
+volumes:
+  waha-sessions:
+
+networks:
+  marko:
+    driver: bridge

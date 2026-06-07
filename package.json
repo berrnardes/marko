@@ -10,8 +10,9 @@
 		"build": "next build",
 		"start": "next start",
 		"lint": "eslint",
-		"worker": "tsx src/worker/index.ts",
-		"worker:dev": "tsx watch src/worker/index.ts",
+		"worker": "tsx --env-file=.env src/worker/index.ts",
+		"worker:dev": "tsx watch --env-file=.env src/worker/index.ts",
+		"worker:start": "tsx src/worker/index.ts",
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"typecheck": "tsc --noEmit",
@@ -30,6 +31,7 @@
 		"pg-boss": "^12.18.2",
 		"react": "19.2.4",
 		"react-dom": "19.2.4",
+		"tsx": "^4.22.4",
 		"zod": "^4.4.3"
 	},
 	"devDependencies": {
@@ -45,7 +47,6 @@
 		"eslint-config-next": "16.2.7",
 		"fast-check": "^4.8.0",
 		"tailwindcss": "^4",
-		"tsx": "^4.22.4",
 		"typescript": "^5",
 		"vitest": "^4.1.8"
 	},
