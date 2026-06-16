@@ -212,7 +212,9 @@ processado.
   `BETTER_AUTH_URL`, etc.). `BETTER_AUTH_URL` / `NEXT_PUBLIC_BETTER_AUTH_URL`
   devem ser o domínio de produção.
 - **`CADENCE_TEST_MODE` desligado em produção.** Caso contrário a cadência roda
-  em segundos com apenas 3 toques, em vez dos 5 toques / 15 dias reais.
+  em segundos com apenas 3 toques, em vez dos 5 toques / 15 dias reais. Ele
+  também ativa o **`ANTIBAN_TEST_MODE`** (que desliga janela de envio, cap diário
+  e pacing do anti-ban) — ambos devem ficar desligados em produção.
 
 ---
 

@@ -103,7 +103,10 @@ Preencha:
 > `docker-compose.yml` já o define como `http://waha:3000` (rede interna).
 >
 > **Não** defina `CADENCE_TEST_MODE` (deixe ausente). Em produção a cadência
-> precisa rodar nos 5 toques / 15 dias reais.
+> precisa rodar nos 5 toques / 15 dias reais. O mesmo vale para
+> `ANTIBAN_TEST_MODE` — em produção o anti-ban (janela de envio, cap diário e
+> pacing) precisa ficar ativo. Ligar `CADENCE_TEST_MODE` ativa o
+> `ANTIBAN_TEST_MODE` implicitamente.
 
 ---
 
@@ -130,8 +133,9 @@ Você deve ver:
 [worker] ready — cadence, nurture, and outbound handlers registered.
 ```
 
-> Se aparecer o aviso `⚠️ CADENCE_TEST_MODE is ON`, remova essa variável do
-> `.env.production` e suba de novo — não é para estar ligada em produção.
+> Se aparecer o aviso `⚠️ CADENCE_TEST_MODE is ON` ou
+> `⚠️ ANTIBAN_TEST_MODE is ON`, remova essa variável do `.env.production` e suba
+> de novo — não é para estar ligada em produção.
 
 ---
 
@@ -192,6 +196,7 @@ recusaria esse lockfile no `npm ci`.
 - [ ] Migrations aplicadas no Supabase (`npm run db:migrate`).
 - [ ] `.env.production` preenchido com a conexão **DIRETA** (5432) no worker.
 - [ ] `CADENCE_TEST_MODE` **ausente** em produção.
+- [ ] `ANTIBAN_TEST_MODE` **ausente** em produção (e `CADENCE_TEST_MODE` também, pois ele o ativa).
 - [ ] `docker compose ... up -d --build` rodando; worker em `running`.
 - [ ] Sessão do WAHA autenticada (QR) e webhook apontando para a Vercel.
 - [ ] Vercel com a conexão **POOLED** (6543) e demais env vars.
