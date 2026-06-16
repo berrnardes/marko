@@ -100,3 +100,20 @@ export interface ImportReportView {
 	rejectedCount: number;
 	rows: ImportRowResultView[];
 }
+
+// ---------------------------------------------------------------------------
+// WhatsApp numbers management
+// ---------------------------------------------------------------------------
+
+/** A WhatsApp number row as viewed in the CRM management UI. */
+export interface NumberView {
+	id: string;
+	sessionName: string;
+	msisdn: string;
+	blocked: boolean;
+	dailySent: number;
+	/** ISO-8601 date string the daily counter applies to. */
+	dailyCounterDate: string;
+	/** ISO-8601 date string the warm-up ramp started. */
+	warmupStartDate: string;
+}

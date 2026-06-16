@@ -474,6 +474,7 @@ async function processOutboundRequest(
 export async function registerWorkers(rt: Runtime): Promise<void> {
 	await rt.boss.work<CadenceTouchJob>(QUEUE_NAMES.cadence, async (jobs) => {
 		for (const job of jobs) {
+			console.log("Processing job:", job.data);
 			await rt.cadenceWorker.process(job.data);
 		}
 	});

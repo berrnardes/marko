@@ -332,9 +332,12 @@ export class OutboundWorkerService implements OutboundWorker {
 		const chatId = await this.waha.resolveChatId(lead.phoneE164);
 
 		// 6–7. Simulate typing presence before sending (Req 17.2), then perform
-		//      the single WAHA send. The typing indicator is always stopped, even
-		//      if the send throws, without masking the send error.
-		await this.waha.startTyping(numberId, chatId);
+		//      the single WAHA send. Typing presence is a best-effort human-like
+		//      nicety: some WAHA engines (e.g. WEBJS CORE) do not support the
+		//      presence endpoint and return 500, so a failure to start/stop typing
+		//      must never block the actual send. The typing indicator is always
+		//      stopped, even if the send throws, without masking the send error.
+		await this.waha.startTyping(numberId, chatId).catch(() => undefined);
 		let sent: { waMessageId: string };
 		try {
 			sent = await this.waha.sendText(numberId, chatId, content);

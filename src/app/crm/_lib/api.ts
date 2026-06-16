@@ -21,6 +21,7 @@ import type {
 	ImportReportView,
 	LeadDetailView,
 	LeadSummaryView,
+	NumberView,
 } from "./types";
 
 /** Read JSON from a guarded endpoint, throwing a readable error on failure. */
@@ -40,6 +41,7 @@ export const crmKeys = {
 	leads: ["crm", "leads"] as const,
 	lead: (leadId: string) => ["crm", "lead", leadId] as const,
 	handoffs: ["crm", "handoffs"] as const,
+	numbers: ["crm", "numbers"] as const,
 };
 
 /** Fetch the lead list — lifecycle state + score per lead (Req 20.1). */
@@ -111,6 +113,119 @@ export function useImportCsv(): UseMutationResult<
 		},
 		onSuccess: () => {
 			void queryClient.invalidateQueries({ queryKey: crmKeys.leads });
+		},
+	});
+}
+
+// ---------------------------------------------------------------------------
+// WhatsApp numbers management
+// ---------------------------------------------------------------------------
+
+/** Fetch all WhatsApp numbers (including blocked). */
+export function useNumbers(): UseQueryResult<NumberView[]> {
+	return useQuery({
+		queryKey: crmKeys.numbers,
+		queryFn: async () => {
+			const data = await getJson<{ numbers: NumberView[] }>("/api/crm/numbers");
+			return data.numbers;
+		},
+	});
+}
+
+/** Create a new WhatsApp number. */
+export function useCreateNumber(): UseMutationResult<
+	NumberView,
+	Error,
+	{ sessionName: string; msisdn: string }
+> {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: async (payload: { sessionName: string; msisdn: string }) => {
+			const response = await fetch("/api/crm/numbers", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(payload),
+				credentials: "same-origin",
+			});
+			if (!response.ok) {
+				const detail = (await response.json().catch(() => null)) as {
+					error?: string;
+				} | null;
+				throw new Error(
+					detail?.error ?? `Failed to create number (${response.status})`,
+				);
+			}
+			const data = (await response.json()) as { number: NumberView };
+			return data.number;
+		},
+		onSuccess: () => {
+			void queryClient.invalidateQueries({ queryKey: crmKeys.numbers });
+		},
+	});
+}
+
+/** Toggle the block flag on a WhatsApp number. */
+export function useToggleNumberBlock(): UseMutationResult<
+	void,
+	Error,
+	{ numberId: string; blocked: boolean }
+> {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: async ({
+			numberId,
+			blocked,
+		}: {
+			numberId: string;
+			blocked: boolean;
+		}) => {
+			const response = await fetch(
+				`/api/crm/numbers/${encodeURIComponent(numberId)}`,
+				{
+					method: "PATCH",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ blocked }),
+					credentials: "same-origin",
+				},
+			);
+			if (!response.ok) {
+				const detail = (await response.json().catch(() => null)) as {
+					error?: string;
+				} | null;
+				throw new Error(
+					detail?.error ?? `Failed to update number (${response.status})`,
+				);
+			}
+		},
+		onSuccess: () => {
+			void queryClient.invalidateQueries({ queryKey: crmKeys.numbers });
+		},
+	});
+}
+
+/** Delete a WhatsApp number. */
+export function useDeleteNumber(): UseMutationResult<void, Error, string> {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: async (numberId: string) => {
+			const response = await fetch(
+				`/api/crm/numbers/${encodeURIComponent(numberId)}`,
+				{
+					method: "DELETE",
+					credentials: "same-origin",
+				},
+			);
+			if (!response.ok) {
+				const detail = (await response.json().catch(() => null)) as {
+					error?: string;
+				} | null;
+				throw new Error(
+					detail?.error ?? `Failed to delete number (${response.status})`,
+				);
+			}
+		},
+		onSuccess: () => {
+			void queryClient.invalidateQueries({ queryKey: crmKeys.numbers });
 		},
 	});
 }

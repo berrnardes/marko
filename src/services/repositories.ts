@@ -215,8 +215,17 @@ export interface ScheduledJobRepository {
  */
 export interface NumberRepository {
 	findById(numberId: string): Promise<NumberRecord | null>;
+	/** List ALL numbers regardless of block status (for CRM management). */
+	listAll(): Promise<NumberRecord[]>;
 	/** List numbers that are available to send (not blocked). */
 	listAvailable(): Promise<NumberRecord[]>;
+	/** Insert a new WhatsApp number record for sending. */
+	insert(record: {
+		sessionName: string;
+		msisdn: string;
+	}): Promise<NumberRecord>;
+	/** Delete a number by id. */
+	delete(numberId: string): Promise<void>;
 	/** Set or clear the block flag for a number (Req 18.1). */
 	setBlocked(numberId: string, blocked: boolean): Promise<void>;
 	/**

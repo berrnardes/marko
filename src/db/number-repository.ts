@@ -97,6 +97,12 @@ export class DrizzleNumberRepository implements NumberRepository {
 	}
 
 	/** @inheritdoc */
+	async listAll(): Promise<NumberRecord[]> {
+		const rows = await this.database.select().from(whatsappNumbers);
+		return rows.map(toRecord);
+	}
+
+	/** @inheritdoc */
 	async listAvailable(): Promise<NumberRecord[]> {
 		// Only non-blocked numbers are ever offered for assignment; a blocked
 		// number must never be assigned a send (Req 18.3).
@@ -105,6 +111,29 @@ export class DrizzleNumberRepository implements NumberRepository {
 			.from(whatsappNumbers)
 			.where(eq(whatsappNumbers.blocked, false));
 		return rows.map(toRecord);
+	}
+
+	/** @inheritdoc */
+	async insert(record: {
+		sessionName: string;
+		msisdn: string;
+	}): Promise<NumberRecord> {
+		const [row] = await this.database
+			.insert(whatsappNumbers)
+			.values({
+				sessionName: record.sessionName,
+				msisdn: record.msisdn,
+				warmupStartDate: toDayString(new Date()),
+			})
+			.returning();
+		return toRecord(row);
+	}
+
+	/** @inheritdoc */
+	async delete(numberId: string): Promise<void> {
+		await this.database
+			.delete(whatsappNumbers)
+			.where(eq(whatsappNumbers.id, numberId));
 	}
 
 	/** @inheritdoc */
