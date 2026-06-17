@@ -21,10 +21,13 @@
 // need the live runtime import `@/services/runtime` explicitly (mirroring how
 // `@/db/client` is kept out of the `@/db` barrel).
 
+import { ChatOpenRouter } from "@langchain/openrouter";
 import { PgBoss } from "pg-boss";
 
 import { CADENCE_TEST_MODE, CADENCE_TOUCHES_COUNT } from "@/core/cadence";
 import type { AntiBanConfig, Clock } from "@/core/types";
+import { DrizzleComplianceRepository } from "@/db/compliance-repository";
+import { DrizzleHandoffRepository } from "@/db/handoff-repository";
 import { DrizzleLeadRepository } from "@/db/lead-repository";
 import { DrizzleMessageRepository } from "@/db/message-repository";
 import { DrizzleNumberRepository } from "@/db/number-repository";
@@ -44,6 +47,18 @@ import {
 	type CadenceWorker,
 } from "@/services/cadence-worker";
 import {
+	createComplianceManager,
+	type ComplianceManager,
+} from "@/services/compliance-manager";
+import {
+	createHandoffManager,
+	type HandoffManager,
+} from "@/services/handoff-manager";
+import {
+	createInboundHandler,
+	type InboundHandler,
+} from "@/services/inbound-handler";
+import {
 	type InboundProcessingJob,
 	type InboundProcessingQueue,
 } from "@/services/inbound-webhook";
@@ -51,7 +66,10 @@ import {
 	createLeadImporter,
 	type LeadImporter,
 } from "@/services/lead-importer";
-import { createLifecycleManager } from "@/services/lifecycle-manager";
+import {
+	createLifecycleManager,
+	type LifecycleManager,
+} from "@/services/lifecycle-manager";
 import {
 	createNurtureScheduler,
 	type NurtureJob,
@@ -70,10 +88,19 @@ import {
 	type OutboundWorker,
 } from "@/services/outbound-worker";
 import {
+	buildQualificationGraph,
+	type InboundMessage,
+	type QualificationAgent,
+	type ScoringEngine,
+} from "@/services/qualification-agent";
+import type { MessageRepository } from "@/services/repositories";
+import { createScoringEngine } from "@/services/scoring-engine";
+import {
 	createWahaClient,
 	numberSessionResolverFromRepository,
 	type WahaClient,
 } from "@/services/waha-client";
+import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 
 // ---------------------------------------------------------------------------
 // Queue names (the durable pg-boss queues backing the schedulers/workers)
@@ -261,6 +288,10 @@ export interface Runtime {
 	scheduledJobs: DrizzleScheduledJobRepository;
 	waha: WahaClient;
 	antiBan: AntiBanController;
+	lifecycle: LifecycleManager;
+	compliance: ComplianceManager;
+	handoff: HandoffManager;
+	scoring: ScoringEngine;
 	cadenceScheduler: CadenceScheduler;
 	nurtureScheduler: NurtureScheduler;
 	cadenceWorker: CadenceWorker;
@@ -309,6 +340,27 @@ export function getRuntime(): Promise<Runtime> {
 
 			// Pure-core-backed managers and controllers.
 			const lifecycle = createLifecycleManager({ leads });
+			const complianceRepo = new DrizzleComplianceRepository();
+			const handoffRepo = new DrizzleHandoffRepository();
+			const compliance = createComplianceManager({
+				leads,
+				compliance: complianceRepo,
+				scheduledJobs,
+				lifecycle,
+			});
+			const handoff = createHandoffManager({
+				lifecycle,
+				handoffEvents: handoffRepo,
+				scheduledJobs,
+			});
+			const scoring = createScoringEngine({
+				leads,
+				clock,
+				sendWindow: {
+					startHour: antiBanConfig.sendWindow.startHour,
+					endHour: antiBanConfig.sendWindow.endHour,
+				},
+			});
 			const antiBan = createAntiBanController({
 				numbers,
 				config: antiBanConfig,
@@ -379,6 +431,10 @@ export function getRuntime(): Promise<Runtime> {
 				numbers,
 				scheduledJobs,
 				antiBan,
+				lifecycle,
+				compliance,
+				handoff,
+				scoring,
 				cadenceScheduler,
 				nurtureScheduler,
 				cadenceWorker,
@@ -436,9 +492,18 @@ async function processOutboundRequest(
 	request: OutboundSendRequest,
 ): Promise<void> {
 	const now = rt.clock.now();
+	console.log("[outbound] processing send", {
+		leadId: request.leadId,
+		kind: request.kind,
+	});
 
 	// Outside the global send window → defer to the window reopening (Req 17.4).
 	if (!rt.antiBan.withinSendWindow()) {
+		console.warn(
+			"[outbound] outside send window; deferring",
+			request.leadId,
+			request.kind,
+		);
 		await rt.boss.send(QUEUE_NAMES.outbound, request, {
 			startAfter: nextSendWindowStart(rt.antiBanConfig, now),
 		});
@@ -446,6 +511,12 @@ async function processOutboundRequest(
 	}
 
 	const candidates = await rt.numbers.listAvailable();
+	if (candidates.length === 0) {
+		console.warn(
+			"[outbound] no available WhatsApp numbers registered — nothing can be " +
+				"sent. Add a sending number in the CRM (Numbers page) / `numbers` table.",
+		);
+	}
 	for (const number of candidates) {
 		if (!(await rt.antiBan.canAssignSend(number.id))) {
 			continue;
@@ -455,6 +526,11 @@ async function processOutboundRequest(
 			numberId: number.id,
 			content: request.content,
 			kind: request.kind,
+		});
+		console.log("[outbound] send outcome", {
+			leadId: request.leadId,
+			numberId: number.id,
+			status: outcome.status,
 		});
 		switch (outcome.status) {
 			case "sent":
@@ -473,8 +549,103 @@ async function processOutboundRequest(
 
 	// Every available number is blocked or at its daily cap → defer to the next
 	// day so the per-number cap is never exceeded (Req 16.2, 18.3).
+	console.warn(
+		"[outbound] no sendable number right now (none available, blocked, or " +
+			"at daily cap); deferring to next day",
+		{ leadId: request.leadId, kind: request.kind },
+	);
 	await rt.boss.send(QUEUE_NAMES.outbound, request, {
 		startAfter: nextLocalMidnight(now),
+	});
+}
+
+// ---------------------------------------------------------------------------
+// Inbound consumer wiring (worker entry point only)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the chat model the qualification agent runs against (Req 8.1).
+ * Uses OpenRouter (OpenAI-compatible API) with the model and key read from the
+ * environment. Defaults to `openai/gpt-4o-mini`. Constructed lazily by the
+ * worker so the web app never requires an LLM key to boot.
+ */
+function createChatModel(): BaseChatModel {
+	const apiKey = process.env.OPENROUTER_API_KEY;
+	if (!apiKey) {
+		throw new Error(
+			"OPENROUTER_API_KEY is not set; the qualification agent cannot run (Req 8.1).",
+		);
+	}
+	const temperature = Number.parseFloat(
+		process.env.OPENROUTER_TEMPERATURE ?? "0.3",
+	);
+	return new ChatOpenRouter({
+		apiKey,
+		model: process.env.OPENROUTER_MODEL ?? "openai/gpt-4o-mini",
+		temperature: Number.isFinite(temperature) ? temperature : 0.3,
+	});
+}
+
+/**
+ * Wrap a {@link MessageRepository} so `append` is idempotent on the inbound
+ * `wa_message_id`: the webhook already persisted the raw inbound message before
+ * enqueuing, so the worker-side {@link InboundHandler} must NOT insert it again
+ * (GUIA_ARQUITETURA_COMPLETO §14.2 #3). When a message with the same
+ * `wa_message_id` already exists, the existing record is returned instead of a
+ * second insert; everything else delegates unchanged.
+ */
+function idempotentInboundMessages(
+	messages: MessageRepository,
+): MessageRepository {
+	return {
+		listByLead: (leadId) => messages.listByLead(leadId),
+		findByWaMessageId: (waMessageId) => messages.findByWaMessageId(waMessageId),
+		async append(input) {
+			if (input.waMessageId) {
+				const existing = await messages.findByWaMessageId(input.waMessageId);
+				if (existing) {
+					return existing;
+				}
+			}
+			return messages.append(input);
+		},
+	};
+}
+
+/** Resolve the domain `numberId` for the WAHA session that received a message. */
+async function resolveNumberIdForSession(
+	rt: Runtime,
+	session: string,
+): Promise<string | undefined> {
+	const all = await rt.numbers.listAll();
+	return all.find((n) => n.sessionName === session)?.id;
+}
+
+/**
+ * Compose the {@link InboundHandler} for the worker: wires the already-built
+ * managers/repositories from the runtime to the qualification agent (compiled
+ * over the OpenAI chat model), with the idempotent message wrapper so the
+ * webhook's raw inbound is not re-persisted.
+ */
+export function createRuntimeInboundHandler(rt: Runtime): InboundHandler {
+	const agent: QualificationAgent = buildQualificationGraph({
+		model: createChatModel(),
+		leads: rt.leads,
+		scoring: rt.scoring,
+		lifecycle: rt.lifecycle,
+		handoff: rt.handoff,
+		outbound: rt.outboundQueue,
+	});
+	return createInboundHandler({
+		leads: rt.leads,
+		messages: idempotentInboundMessages(rt.messages),
+		waha: rt.waha,
+		compliance: rt.compliance,
+		cadence: rt.cadenceScheduler,
+		nurture: rt.nurtureScheduler,
+		lifecycle: rt.lifecycle,
+		scoring: rt.scoring,
+		agent,
 	});
 }
 
@@ -489,9 +660,10 @@ async function processOutboundRequest(
  * envelope (an array of jobs carrying the typed payload) to a `process` call.
  *
  * Only the long-running worker calls this — the web app enqueues but never
- * consumes. The inbound queue is intentionally left without a handler here: its
- * heavy pipeline (qualification turn) is wired separately; the webhook still
- * persists and enqueues durably so no inbound delivery is lost.
+ * consumes. This includes the inbound queue: its heavy pipeline (lifecycle
+ * advance to QUALIFYING, scoring, and the LLM qualification turn) runs here via
+ * {@link createRuntimeInboundHandler}, while the webhook only persists and
+ * enqueues durably so no inbound delivery is lost.
  */
 export async function registerWorkers(rt: Runtime): Promise<void> {
 	await rt.boss.work<CadenceTouchJob>(QUEUE_NAMES.cadence, async (jobs) => {
@@ -512,6 +684,54 @@ export async function registerWorkers(rt: Runtime): Promise<void> {
 		async (jobs) => {
 			for (const job of jobs) {
 				await processOutboundRequest(rt, job.data);
+			}
+		},
+	);
+
+	// Inbound processing: the webhook persists + enqueues each inbound message;
+	// this is the consumer that runs the heavy Inbound_Handler pipeline (sendSeen,
+	// opt-out, cadence/nurture cancellation, lifecycle advance to QUALIFYING,
+	// scoring, and the qualification agent turn). Previously unregistered, so
+	// replies were enqueued but never processed (GUIA_ARQUITETURA_COMPLETO §14.2
+	// #2). The message append is made idempotent so the raw inbound persisted at
+	// the webhook is not double-written (#3).
+	const inboundHandler = createRuntimeInboundHandler(rt);
+	await rt.boss.work<InboundProcessingJob>(
+		QUEUE_NAMES.inbound,
+		async (jobs) => {
+			for (const job of jobs) {
+				const numberId = await resolveNumberIdForSession(rt, job.data.session);
+				const msg: InboundMessage = {
+					from: job.data.from,
+					text: job.data.text,
+					// pg-boss round-trips the payload through JSON, so `receivedAt`
+					// arrives as a string; rehydrate it to a Date.
+					receivedAt: new Date(job.data.receivedAt),
+					waMessageId: job.data.waMessageId,
+					numberId,
+				};
+				console.log("[inbound] processing reply", {
+					leadId: job.data.leadId,
+					from: job.data.from,
+					numberId: numberId ?? "(no number matched session)",
+					session: job.data.session,
+				});
+				try {
+					await inboundHandler.handle(msg);
+					console.log("[inbound] pipeline completed", {
+						leadId: job.data.leadId,
+					});
+				} catch (err) {
+					// Surface the real failure (most often the LLM qualification turn)
+					// rather than letting pg-boss retry it silently. Rethrow so the job
+					// is marked failed instead of acknowledged as done.
+					console.error(
+						"[inbound] pipeline FAILED for lead",
+						job.data.leadId,
+						err,
+					);
+					throw err;
+				}
 			}
 		},
 	);

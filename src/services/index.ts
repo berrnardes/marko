@@ -23,4 +23,5 @@ export * from "./nurture-worker";
 export * from "./outbound-worker";
 export * from "./qualification-agent";
 export * from "./repositories";
+export * from "./scoring-engine";
 export * from "./waha-client";

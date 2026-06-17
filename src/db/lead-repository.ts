@@ -8,8 +8,9 @@
 // uses (Req 1.4, 1.5, 2.1, 20.3). Lifecycle moves use a compare-and-set on
 // `lifecycle_state` for optimistic concurrency (Req 14.1, 19.4).
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
+import { brazilianPhoneVariants } from "@/core";
 import type {
 	ClassificationBand,
 	LeadSnapshot,
@@ -75,10 +76,16 @@ export class DrizzleLeadRepository implements LeadRepository {
 
 	/** @inheritdoc */
 	async findByPhone(phoneE164: string): Promise<LeadSnapshot | null> {
+		// Match across the Brazilian 9th-digit-equivalent forms of the number so
+		// a Lead imported as the modern form (`+5547996334573`) and an inbound
+		// reply delivered as the legacy short form (`+554796334573`) — or vice
+		// versa — resolve to the SAME Lead instead of duplicating it (Req 1.4,
+		// 7.1). For non-Brazilian inputs this collapses to the exact number.
+		const variants = brazilianPhoneVariants(phoneE164);
 		const [row] = await this.database
 			.select()
 			.from(leads)
-			.where(eq(leads.phoneE164, phoneE164));
+			.where(inArray(leads.phoneE164, variants));
 		return row ? toSnapshot(row) : null;
 	}
 

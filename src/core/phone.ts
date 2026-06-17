@@ -82,3 +82,61 @@ export function normalizePhone(
 
 	return `+55${national}`;
 }
+
+/**
+ * Produce the set of equivalent E.164 forms a Brazilian number may legitimately
+ * appear as, to bridge the pre-2012 mobile **9th-digit ambiguity** (Req 1.4,
+ * 7.1).
+ *
+ * The same WhatsApp contact can be addressed both with and without the leading
+ * `9` on the subscriber part of a mobile number: a CSV import may carry the
+ * modern 11-national-digit form (`+5547996334573`) while WAHA delivers the
+ * inbound reply from the legacy 10-national-digit form (`+554796334573`), or
+ * vice-versa. Exact-string matching would treat these as two different people
+ * and duplicate the Lead, so attribution and dedup must compare against every
+ * equivalent form rather than a single canonical string.
+ *
+ * Behavior:
+ *   - The input itself is always included as the first variant, so callers can
+ *     use the result as the complete match set.
+ *   - For a modern Brazilian mobile (`+55` + DDD + `9` + 8 digits), the legacy
+ *     short form (without the leading `9`) is added.
+ *   - For a legacy short form whose subscriber begins with a mobile digit
+ *     (`6`–`9`), the modern form (with the inserted `9`) is added. Landline
+ *     subscribers (leading `2`–`5`) get no `9`-form, since they never carried
+ *     the 9th-digit change.
+ *   - Non-Brazilian or unrecognized inputs return just the input unchanged.
+ *
+ * The function is pure and order-stable: the input is always first and the
+ * derived variant (when any) second, with duplicates removed.
+ *
+ * @param e164 - An E.164 number, normally the output of {@link normalizePhone}.
+ * @returns The 9th-digit-equivalent E.164 forms to match against, input first.
+ */
+export function brazilianPhoneVariants(e164: string): string[] {
+	if (typeof e164 !== "string") {
+		return [];
+	}
+	const digits = e164.replace(/\D+/g, "");
+	// Only Brazilian numbers (country code 55) carry this ambiguity; anything
+	// else round-trips unchanged so callers can always use the result as-is.
+	if (!digits.startsWith("55")) {
+		return [e164];
+	}
+	const national = digits.slice(2);
+	const ddd = national.slice(0, 2);
+	const subscriber = national.slice(2);
+	const variants = new Set<string>([e164]);
+
+	if (subscriber.length === 9 && subscriber.startsWith("9")) {
+		// Modern mobile (DDD + 9 + 8 digits): add the legacy short form by
+		// dropping the leading 9 from the subscriber part.
+		variants.add(`+55${ddd}${subscriber.slice(1)}`);
+	} else if (subscriber.length === 8 && /^[6-9]/.test(subscriber)) {
+		// Legacy short mobile form (leading 6–9 marks a mobile, not a landline):
+		// add the modern form by inserting the 9th digit after the DDD.
+		variants.add(`+55${ddd}9${subscriber}`);
+	}
+
+	return [...variants];
+}
