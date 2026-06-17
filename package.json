@@ -17,7 +17,8 @@
 		"test:watch": "vitest",
 		"typecheck": "tsc --noEmit",
 		"db:generate": "drizzle-kit generate",
-		"db:migrate": "drizzle-kit migrate"
+		"db:migrate": "drizzle-kit migrate",
+		"db:clear": "tsx --env-file=.env scripts/clear-db.ts"
 	},
 	"dependencies": {
 		"@langchain/core": "^1.1.48",
