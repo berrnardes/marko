@@ -166,26 +166,6 @@ export interface AntiBanControllerConfig {
 	 * is deterministic under test.
 	 */
 	rng?: Rng;
-	/**
-	 * Anti-ban **test mode** — when `true`, the rate-limiting gates are
-	 * deactivated for fast, real-world functional testing (companion to
-	 * `CADENCE_TEST_MODE`; see `@/core/cadence`). Specifically:
-	 *
-	 *   - {@link evaluate}/{@link canAssignSend} skip the Send_Window (Req 17.4)
-	 *     and daily-cap/warm-up (Req 16.2, 16.5) checks so a number can send
-	 *     immediately at any hour;
-	 *   - {@link nextDelayMs} returns `0`, removing the randomized inter-send
-	 *     pacing wait (Req 17.1);
-	 *   - {@link withinSendWindow} always reports `true`.
-	 *
-	 * The **block flag is still honored** (Req 18.2, 18.3): a number explicitly
-	 * marked blocked never sends, even in test mode, since that is a safety
-	 * signal rather than a pacing limit. Daily counting via {@link recordSend}
-	 * still happens for observability; it just never gates a send.
-	 *
-	 * Defaults to `false`. Production deploys MUST leave this off.
-	 */
-	testMode?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -229,26 +209,17 @@ export class AntiBanControllerService implements AntiBanController {
 	private readonly config: AntiBanConfig;
 	private readonly clock: Clock;
 	private readonly rng: Rng;
-	private readonly testMode: boolean;
 
 	constructor(deps: AntiBanControllerConfig) {
 		this.numbers = deps.numbers;
 		this.config = deps.config;
 		this.clock = deps.clock;
 		this.rng = deps.rng ?? Math.random;
-		this.testMode = deps.testMode ?? false;
 	}
 
 	/** @inheritdoc */
 	async evaluate(numberId: string): Promise<SendDecision> {
 		const record = await this.requireRecord(numberId);
-
-		// Test mode: deactivate the rate-limiting gates (window + cap/ramp) so a
-		// number can send immediately at any hour for functional testing. The
-		// block flag is still honored — a blocked number never sends (Req 18.2).
-		if (this.testMode) {
-			return record.blocked ? "blocked" : "allow";
-		}
 
 		const now = this.clock.now();
 		const state = this.toNumberState(record, now);
@@ -299,19 +270,11 @@ export class AntiBanControllerService implements AntiBanController {
 
 	/** @inheritdoc */
 	nextDelayMs(): number {
-		// Test mode: no pacing wait between sends (Req 17.1 deactivated).
-		if (this.testMode) {
-			return 0;
-		}
 		return nextDelayMs(this.config, this.rng);
 	}
 
 	/** @inheritdoc */
 	withinSendWindow(): boolean {
-		// Test mode: the Send_Window is always open (Req 17.4 deactivated).
-		if (this.testMode) {
-			return true;
-		}
 		return withinSendWindow(this.config, this.clock.now());
 	}
 

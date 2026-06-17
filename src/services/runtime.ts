@@ -137,22 +137,6 @@ function envInt(name: string, fallback: number): number {
 	return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-/** Read a boolean env flag — `true` only for the strings `"1"` or `"true"`. */
-function envFlag(name: string): boolean {
-	const raw = process.env[name];
-	return raw === "1" || raw === "true";
-}
-
-/**
- * Whether the anti-ban rate-limiting gates are deactivated for functional
- * testing. On when `ANTIBAN_TEST_MODE=1`, and implicitly on whenever
- * `CADENCE_TEST_MODE` is set so the compressed-cadence test flow is not blocked
- * by the send window, daily cap, or randomized pacing (the block flag is still
- * honored — see {@link AntiBanController}). Production MUST leave both off.
- */
-export const ANTIBAN_TEST_MODE: boolean =
-	envFlag("ANTIBAN_TEST_MODE") || CADENCE_TEST_MODE;
-
 /**
  * The anti-ban configuration driving the per-number daily cap, warm-up ramp,
  * randomized send pacing, and send-window restriction (Req 16, 17). Defaults
@@ -322,11 +306,6 @@ export function getRuntime(): Promise<Runtime> {
 					CADENCE_TOUCHES_COUNT,
 				);
 			}
-			if (ANTIBAN_TEST_MODE) {
-				console.warn(
-					"[runtime] ⚠️  ANTIBAN_TEST_MODE is ON — send window, daily cap, and pacing are disabled (block flag still honored)",
-				);
-			}
 
 			const boss = await getBoss();
 			const antiBanConfig = defaultAntiBanConfig();
@@ -365,7 +344,6 @@ export function getRuntime(): Promise<Runtime> {
 				numbers,
 				config: antiBanConfig,
 				clock,
-				testMode: ANTIBAN_TEST_MODE,
 			});
 			const waha = createWahaClient({
 				baseUrl: process.env.WAHA_BASE_URL ?? "http://localhost:3000",

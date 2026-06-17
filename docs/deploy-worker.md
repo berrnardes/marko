@@ -103,10 +103,7 @@ Preencha:
 > `docker-compose.yml` já o define como `http://waha:3000` (rede interna).
 >
 > **Não** defina `CADENCE_TEST_MODE` (deixe ausente). Em produção a cadência
-> precisa rodar nos 5 toques / 15 dias reais. O mesmo vale para
-> `ANTIBAN_TEST_MODE` — em produção o anti-ban (janela de envio, cap diário e
-> pacing) precisa ficar ativo. Ligar `CADENCE_TEST_MODE` ativa o
-> `ANTIBAN_TEST_MODE` implicitamente.
+> precisa rodar nos 5 toques / 15 dias reais.
 
 ---
 
