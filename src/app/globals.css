@@ -15,11 +15,11 @@
  * "Fraunces" reserved for display headings.
  */
 @theme inline {
-	--color-primary: #163d2c;
+	--color-primary: #004741;
 	--color-accent: #e2922e;
 	--color-secondary: #c2603a;
 	--color-ink: #212121;
-	--color-surface: #f0eee9;
+	--color-surface: #f0ede4;
 	--color-surface-card: #ffffff;
 
 	--font-sans: var(--font-hanken), ui-sans-serif, system-ui, sans-serif;

@@ -71,9 +71,9 @@ export function buildHandoffNotificationText(
 	crmBaseUrl?: string,
 ): string {
 	const lines: string[] = [
-		"🔥 Novo lead para atendimento",
-		`Motivo: ${REASON_LABELS[reason]}`,
+		"Novo lead para atendimento",
 		"",
+		`Motivo: ${REASON_LABELS[reason]}`,
 		`• Telefone: ${lead.phoneE164}`,
 		`• Pontuação: ${lead.score}${lead.classificationBand ? ` (${lead.classificationBand})` : ""}`,
 	];
