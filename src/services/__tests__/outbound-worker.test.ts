@@ -80,6 +80,26 @@ function leadRepoReturning(lead: LeadSnapshot | null): LeadRepository {
 	} as unknown as LeadRepository;
 }
 
+/**
+ * Build a `LeadRepository` whose `findById` returns each entry of `leads` in
+ * turn (the last entry repeats once exhausted), so a test can model the lead's
+ * state changing between the pre-pacing read and the post-pacing re-read.
+ */
+function leadRepoSequence(leads: (LeadSnapshot | null)[]): LeadRepository {
+	let call = 0;
+	return {
+		findById: vi.fn(async () => leads[Math.min(call++, leads.length - 1)]),
+		findByPhone: vi.fn(),
+		create: vi.fn(),
+		updateQualification: vi.fn(),
+		updateScore: vi.fn(),
+		updateLifecycleState: vi.fn(),
+		setOptInStatus: vi.fn(),
+		setBlocked: vi.fn(),
+		assignConsultant: vi.fn(),
+	} as unknown as LeadRepository;
+}
+
 /** Build an `AntiBanController` whose `evaluate` yields `decision`. */
 function antiBanWith(
 	decision: SendDecision,
@@ -173,6 +193,66 @@ describe("OutboundWorker.process", () => {
 
 		expect(outcome).toEqual({ status: "dropped_opt_out", leadId: "lead-1" });
 		expect(antiBan.evaluate).not.toHaveBeenCalled();
+		expect(waha.sendText).not.toHaveBeenCalled();
+		expect(calls).toHaveLength(0);
+		expect(order).toEqual([]);
+	});
+
+	it("drops a queued send when the lead reached a stop state after enqueue, e.g. handed off to a consultant (Req 5.2, 13.4)", async () => {
+		const order: string[] = [];
+		const waha = wahaRecording(order);
+		const { committer, calls } = recordingCommitter();
+		const antiBan = antiBanWith("allow");
+		const worker = createOutboundWorker({
+			// The lead replied and was handed off (→ HOT) after the cadence touch
+			// enqueued this send but before the choke point drained it.
+			leads: leadRepoReturning(makeLead({ lifecycleState: "HOT" })),
+			antiBan,
+			waha,
+			commit: committer,
+			clock,
+			sleep,
+		});
+
+		const outcome = await worker.process(JOB);
+
+		expect(outcome).toEqual({ status: "dropped_stopped", leadId: "lead-1" });
+		expect(antiBan.evaluate).not.toHaveBeenCalled();
+		expect(waha.sendText).not.toHaveBeenCalled();
+		expect(sleep).not.toHaveBeenCalled();
+		expect(calls).toHaveLength(0);
+		expect(order).toEqual([]);
+	});
+
+	it("drops the send when the lead is handed off DURING the pacing wait, re-reading fresh state before sending (Req 5.2, 13.4)", async () => {
+		const order: string[] = [];
+		const waha = wahaRecording(order);
+		const { committer, calls } = recordingCommitter();
+		const antiBan = antiBanWith("allow");
+		// First read (pre-pacing) sees an in-cadence lead and proceeds; the lead
+		// replies and is handed off (→ HOT) while the pacing sleep is awaited, so
+		// the second read (post-pacing) must see HOT and drop before the send.
+		const leads = leadRepoSequence([
+			makeLead({ lifecycleState: "IN_CADENCE" }),
+			makeLead({ lifecycleState: "HOT" }),
+		]);
+		const worker = createOutboundWorker({
+			leads,
+			antiBan,
+			waha,
+			commit: committer,
+			clock,
+			sleep,
+		});
+
+		const outcome = await worker.process(JOB);
+
+		expect(outcome).toEqual({ status: "dropped_stopped", leadId: "lead-1" });
+		// It passed the early gate and the anti-ban evaluate, paced, then re-read.
+		expect(antiBan.evaluate).toHaveBeenCalledTimes(1);
+		expect(sleep).toHaveBeenCalledTimes(1);
+		expect(leads.findById).toHaveBeenCalledTimes(2);
+		// No message ever went out and nothing was committed.
 		expect(waha.sendText).not.toHaveBeenCalled();
 		expect(calls).toHaveLength(0);
 		expect(order).toEqual([]);

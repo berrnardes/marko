@@ -8,10 +8,13 @@ const SKIPPED_TABLES = new Set([
 	"session",
 	"user",
 	"verification",
+	"whatsapp_numbers",
 ]);
 
 function hasConfirmation(): boolean {
-	return process.argv.includes("--confirm") || process.env.CLEAR_DB_CONFIRM === "yes";
+	return (
+		process.argv.includes("--confirm") || process.env.CLEAR_DB_CONFIRM === "yes"
+	);
 }
 
 function quoteIdent(value: string): string {
@@ -33,9 +36,9 @@ async function main(): Promise<void> {
 	const pool = new Pool({ connectionString });
 
 	try {
-		const { rows: databaseRows } = await pool.query<{ current_database: string }>(
-			"select current_database()",
-		);
+		const { rows: databaseRows } = await pool.query<{
+			current_database: string;
+		}>("select current_database()");
 		const databaseName = databaseRows[0]?.current_database ?? "(unknown)";
 
 		const { rows } = await pool.query<{
@@ -60,7 +63,10 @@ async function main(): Promise<void> {
 		}
 
 		const tableList = tables
-			.map((row) => `${quoteIdent(row.table_schema)}.${quoteIdent(row.table_name)}`)
+			.map(
+				(row) =>
+					`${quoteIdent(row.table_schema)}.${quoteIdent(row.table_name)}`,
+			)
 			.join(", ");
 
 		await pool.query("begin");

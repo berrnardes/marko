@@ -574,6 +574,7 @@ async function processOutboundRequest(
 		switch (outcome.status) {
 			case "sent":
 			case "dropped_opt_out":
+			case "dropped_stopped":
 				return;
 			case "blocked":
 			case "deferred_cap":

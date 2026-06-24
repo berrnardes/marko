@@ -8,6 +8,12 @@
 //
 // The send path follows the design's choke-point flowchart, in order:
 //   1. Lead opt_out?            → drop the send, never go outbound (Req 15.3).
+//   1b. Lead in a send-guard stop state (replied/handed-off/blocked, …)? → drop
+//                                 the send. The touch/nurture jobs are scheduled
+//                                 (and the rendered message enqueued here) ahead
+//                                 of time, so a lead that replies after a touch
+//                                 fired but before this job is drained must not
+//                                 still receive the queued message (Req 5.2, 13.4).
 //   2. Number block flag set?   → stop; perform no send from a blocked number
 //                                 (Req 18.2, 18.3).
 //   3. Within the Send_Window?  → if not, defer to the window reopening
@@ -43,7 +49,8 @@
 // and stays free of the queue.
 
 import type { SendDecision } from "@/core/anti-ban";
-import type { Clock } from "@/core/types";
+import { evaluateSendGuard } from "@/core/send-guard";
+import type { Clock, LeadSnapshot } from "@/core/types";
 import type { AntiBanController } from "@/services/anti-ban-controller";
 import { UnknownLeadError } from "@/services/lifecycle-manager";
 import type {
@@ -134,6 +141,11 @@ export interface OutboundSendQueue {
  *     the number's new daily count (Req 16.2, 17.2).
  *   - `"dropped_opt_out"` — the lead has opted out; the send is dropped and no
  *     outbound is ever made (Req 15.3). Terminal: the job must not be retried.
+ *   - `"dropped_stopped"` — the lead reached a send-guard stop condition after
+ *     this send was enqueued (it replied / was handed off to a consultant / was
+ *     blocked, e.g. `REPLIED`/`HOT`/`WARM`/`DISQUALIFIED`/`OPTED_OUT` or the
+ *     block flag). The queued message is dropped so no automated outbound is
+ *     sent to an already-engaged lead (Req 5.2, 13.4). Terminal: do not retry.
  *   - `"blocked"`         — the sending number's block flag is set; no send is
  *     performed (Req 18.2). The caller stops using this number for the job
  *     (reassign/park is an entry-point concern, Req 18.3).
@@ -151,6 +163,7 @@ export type OutboundSendOutcome =
 			dailyCount: number;
 	  }
 	| { status: "dropped_opt_out"; leadId: string }
+	| { status: "dropped_stopped"; leadId: string }
 	| { status: "blocked"; leadId: string; numberId: string }
 	| { status: "deferred_window"; leadId: string; numberId: string }
 	| { status: "deferred_cap"; leadId: string; numberId: string };
@@ -287,19 +300,46 @@ export class OutboundWorkerService implements OutboundWorker {
 		this.sleep = deps.sleep ?? defaultSleep;
 	}
 
+	/**
+	 * The terminal stop gate run against a freshly-read lead snapshot: returns the
+	 * drop outcome when the lead must not receive this queued automated message,
+	 * or `null` when the send may proceed. An opt-out yields the distinct
+	 * `dropped_opt_out` outcome (Req 15.3); any other send-guard stop condition —
+	 * the lead replied / was handed off (`HOT`) / blocked / classified out, per
+	 * `evaluateSendGuard` — yields `dropped_stopped` (Req 5.2, 13.4). Both are
+	 * terminal: the job must not be retried.
+	 */
+	private stopGate(
+		lead: LeadSnapshot,
+		leadId: string,
+	): OutboundSendOutcome | null {
+		if (lead.optInStatus === "opt_out") {
+			return { status: "dropped_opt_out", leadId };
+		}
+		if (evaluateSendGuard(lead) === "skip_and_cancel") {
+			return { status: "dropped_stopped", leadId };
+		}
+		return null;
+	}
+
 	/** @inheritdoc */
 	async process(job: OutboundSendJob): Promise<OutboundSendOutcome> {
 		const { leadId, numberId, content } = job;
 
-		// 1. Opt-out gate (Req 15.3). While a lead's Opt_In_Status is `opt_out`,
-		//    no outbound is ever sent: the send is dropped, not deferred, so the
-		//    job is terminal and must not be retried.
+		// 1/1b. Opt-out + send-guard stop gate (Req 15.3, 5.2, 13.4). Outbound
+		//       sends are enqueued ahead of time — a cadence touch or nurture
+		//       message is rendered and queued, then drained later behind the
+		//       anti-ban pacing — so the lead may have opted out, replied (→ handed
+		//       off to a consultant, `HOT`), or otherwise reached a stop state
+		//       *after* this job was enqueued. Drop early to avoid needless work
+		//       (re-checked after the pacing wait below, where the real race is).
 		const lead = await this.leads.findById(leadId);
 		if (!lead) {
 			throw new UnknownLeadError(leadId);
 		}
-		if (lead.optInStatus === "opt_out") {
-			return { status: "dropped_opt_out", leadId };
+		const earlyStop = this.stopGate(lead, leadId);
+		if (earlyStop) {
+			return earlyStop;
 		}
 
 		// 2–4. Per-number gate via the pure `canSend` decision, evaluated in the
@@ -327,9 +367,25 @@ export class OutboundWorkerService implements OutboundWorker {
 		//    injectable sleep seam.
 		await this.sleep(this.antiBan.nextDelayMs());
 
+		// 5b. Re-check the stop gate against FRESH lead state after the pacing wait
+		//     (Req 5.2, 13.4). The randomized delay above is a real window (seconds)
+		//     during which the lead can reply and be handed off, so the gate checked
+		//     before the wait is stale by the time we are about to send. Re-read and
+		//     re-evaluate immediately before the single WAHA send so a lead that
+		//     became engaged *during* the pacing wait does not still receive this
+		//     queued automated message. Terminal: dropped, not deferred.
+		const freshLead = await this.leads.findById(leadId);
+		if (!freshLead) {
+			throw new UnknownLeadError(leadId);
+		}
+		const lateStop = this.stopGate(freshLead, leadId);
+		if (lateStop) {
+			return lateStop;
+		}
+
 		// Resolve the canonical WhatsApp chat id from the lead's E.164 at send
 		// time (handles the Brazilian pre-2012 ambiguity inside the client).
-		const chatId = await this.waha.resolveChatId(lead.phoneE164);
+		const chatId = await this.waha.resolveChatId(freshLead.phoneE164);
 
 		// 6–7. Simulate typing presence before sending (Req 17.2), then perform
 		//      the single WAHA send. Typing presence is a best-effort human-like
