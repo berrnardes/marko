@@ -126,6 +126,7 @@ export function MessageHistoryCard({ messages }: { messages: MessageView[] }) {
 
 /** Human-readable labels for handoff trigger reasons (Req 13.2). */
 const HANDOFF_REASON_LABELS: Record<HandoffEventView["reason"], string> = {
+	replied: "Lead respondeu — repassado ao consultor",
 	hot_score: "Pontuação ultrapassou 70 (quente)",
 	frustration: "Frustração detectada",
 	out_of_data: "Solicitou informação indisponível",

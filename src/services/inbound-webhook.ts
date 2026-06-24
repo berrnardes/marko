@@ -42,6 +42,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 
 import { normalizePhone } from "@/core";
+import type { AntiBanController } from "@/services/anti-ban-controller";
 import type {
 	LeadRepository,
 	MessageRepository,
@@ -81,6 +82,12 @@ export const WahaMessagePayloadSchema = z.looseObject({
 	id: z.string().min(1),
 	/** Raw WhatsApp sender id (e.g. `"5511999999999@c.us"`), normalized later. */
 	from: z.string().min(1),
+	/**
+	 * Raw WhatsApp recipient id. For an outbound echo (`fromMe: true`) `from` is
+	 * our own number and the Lead is the recipient here, so it is the attribution
+	 * key for ingesting the consultant's WhatsApp Web replies.
+	 */
+	to: z.string().optional(),
 	/** The inbound message text (may be empty for media-only messages). */
 	body: z.string().default(""),
 	/** Receipt time as WAHA epoch SECONDS. */
@@ -201,6 +208,20 @@ export interface WahaWebhookDeps {
 	 */
 	lids?: LidResolver;
 	/**
+	 * Count a consultant's manual outbound (an ingested `fromMe` echo) against the
+	 * sending number's daily anti-ban cap, so the controller's count includes
+	 * human sends made from a WhatsApp Web linked device. Optional: when absent
+	 * (e.g. in webhook tests), the echo is still recorded in history but the
+	 * counter is not touched.
+	 */
+	antiBan?: Pick<AntiBanController, "recordSend">;
+	/**
+	 * Resolve the WAHA `session` that delivered an outbound echo to the domain
+	 * `numberId` whose daily counter should be incremented. Paired with
+	 * {@link antiBan}; absent in tests.
+	 */
+	resolveNumberId?: (session: string) => Promise<string | undefined>;
+	/**
 	 * Source recorded on a Lead created from an unknown inbound sender (Req 7.5).
 	 * Defaults to {@link DEFAULT_INBOUND_WEBHOOK_SOURCE}.
 	 */
@@ -293,7 +314,10 @@ export function verifyWebhookSignature(
  *   1. **Verify** the HMAC signature over the raw body; on failure return `401`
  *      and process NOTHING (no parse, no persist, no enqueue).
  *   2. **Validate** the parsed body against {@link WahaMessageWebhookSchema};
- *      on failure return `400`.
+ *      on failure return `400`. An outbound echo (`fromMe: true`) is routed to
+ *      {@link handleOutboundEcho} here — it is ingested as outbound history and
+ *      counted against the sending number's anti-ban cap rather than processed
+ *      as inbound (beta WhatsApp-Web consultant-reply flow).
  *   3. **Idempotency**: if a message with this `wa_message_id` was already
  *      persisted, return a fast `200` `"duplicate"` without re-processing — so a
  *      WAHA retry neither double-persists nor double-enqueues (Req 7.4).
@@ -359,12 +383,15 @@ export async function processWahaWebhook(
 	const { session, payload } = result.data;
 	const waMessageId = payload.id;
 
-	// 2b. Skip outbound echoes (Req 7.1). WAHA fires `message.any` for both
-	//     inbound AND the session's own sends. Messages with `fromMe: true` are
-	//     the session's outbound echoes and must not be processed as inbound;
-	//     acknowledge them with 200 so WAHA does not retry.
+	// 2b. Outbound echo ingestion. WAHA delivers the session's own sends as
+	//     `fromMe: true` — including a consultant's replies typed on a WhatsApp Web
+	//     linked device connected to the same number (beta flow). Rather than
+	//     dropping them, ingest them so the consultant's side of the conversation
+	//     lands in the Lead's CRM history and counts against the number's anti-ban
+	//     cap. Our OWN automated sends are already recorded by the outbound
+	//     committer with the same `wa_message_id`, so they dedup to a no-op here.
 	if (payload.fromMe) {
-		return { status: 200, body: { ok: true, status: "accepted" } };
+		return handleOutboundEcho(deps, session, payload);
 	}
 
 	// 3. Idempotency by `wa_message_id` (Req 7.4). WAHA retries deliveries, so a
@@ -438,6 +465,100 @@ export async function processWahaWebhook(
 		receivedAt,
 		session,
 	});
+
+	return { status: 200, body: { ok: true, status: "accepted" } };
+}
+
+/**
+ * Ingest an outbound echo (`fromMe: true`) — a message the WAHA session itself
+ * sent, including a consultant's reply typed from a WhatsApp Web linked device
+ * on the same number (beta flow). The goal is to close the two gaps the
+ * WhatsApp-Web reply model would otherwise open:
+ *
+ *   - **History**: record the message as `outbound` in the recipient Lead's
+ *     history so the consultant's side of the conversation is visible in the CRM.
+ *   - **Anti-ban accuracy**: count the manual send against the sending number's
+ *     daily cap so the controller's count is not blind to human sends.
+ *
+ * Dedup by `wa_message_id` is the load-bearing safeguard: our OWN automated
+ * sends are already recorded by the outbound committer with the same id, so they
+ * resolve to a fast `"duplicate"` here and are never double-recorded or
+ * double-counted; only a genuinely new id is a manual consultant reply. (Like
+ * the inbound path, dedup is by lookup, not a DB constraint, so a rare
+ * echo-vs-committer race could still double-insert; acceptable for the beta.)
+ *
+ * Attribution uses the echo's `to` (the recipient), since for a `fromMe` message
+ * `from` is our own number. An echo with no `to`, an unresolvable `@lid`, a
+ * non-normalizable number, or a recipient that is not a known Lead (e.g. a
+ * consultant alert) is acknowledged and ignored — there is nothing to record.
+ * Always returns `200` so WAHA does not retry.
+ */
+async function handleOutboundEcho(
+	deps: WahaWebhookDeps,
+	session: string,
+	payload: WahaMessageWebhook["payload"],
+): Promise<WebhookResult> {
+	const waMessageId = payload.id;
+
+	// Dedup: our own automated sends (recorded by the committer) and WAHA retries
+	// both already exist under this id — a no-op, so anti-ban is never double-counted.
+	const existing = await deps.messages.findByWaMessageId(waMessageId);
+	if (existing) {
+		return { status: 200, body: { ok: true, status: "duplicate" } };
+	}
+
+	// Attribute by the recipient (`to`): for a `fromMe` echo WE are the sender.
+	const recipient = payload.to;
+	if (!recipient) {
+		return { status: 200, body: { ok: true, status: "ignored" } };
+	}
+	let recipientChatId = recipient;
+	if (recipientChatId.endsWith(LID_SUFFIX)) {
+		const resolved = deps.lids
+			? await deps.lids.resolveLidToPhone(session, recipientChatId)
+			: null;
+		if (resolved === null) {
+			return { status: 200, body: { ok: true, status: "ignored" } };
+		}
+		recipientChatId = resolved;
+	}
+	const phoneE164 = normalizePhone(recipientChatId, "BR");
+	if (phoneE164 === null) {
+		return { status: 200, body: { ok: true, status: "ignored" } };
+	}
+	const lead = await deps.leads.findByPhone(phoneE164);
+	if (!lead) {
+		// Outbound to a non-lead (e.g. a consultant alert recipient): nothing to record.
+		return { status: 200, body: { ok: true, status: "ignored" } };
+	}
+
+	// Record the manual send as outbound history (Req 19.3).
+	await deps.messages.append({
+		leadId: lead.id,
+		direction: "outbound",
+		content: payload.body,
+		waMessageId,
+		createdAt: new Date(payload.timestamp * 1000),
+	});
+
+	// Audit (best-effort): a manual send to an opted-out Lead cannot be blocked
+	// (the human typed it directly), but it should be visible.
+	if (lead.optInStatus === "opt_out") {
+		console.warn(
+			"[inbound-webhook] manual outbound to an opted-out lead",
+			lead.id,
+		);
+	}
+
+	// Count the manual send against the sending number's daily cap so the
+	// anti-ban controller stays accurate. Best-effort: skipped when the seam is
+	// absent (tests) or the session does not map to a registered number.
+	if (deps.antiBan && deps.resolveNumberId) {
+		const numberId = await deps.resolveNumberId(session);
+		if (numberId) {
+			await deps.antiBan.recordSend(numberId);
+		}
+	}
 
 	return { status: 200, body: { ok: true, status: "accepted" } };
 }

@@ -1,12 +1,11 @@
 // Scoring engine (I/O boundary — recompute + persist a Lead's Score/band).
 //
 // Implements the design's `Scoring_Engine` persistence wrapper: the concrete
-// {@link ScoringEngine} the Inbound_Handler and the qualification agent's
-// `score_and_classify` node depend on (Req 11.1, 12). The scoring MATH is the
-// pure `@/core/scoring` (`computeBaseScore`) and `@/core/classify` (`classify`);
-// this module only derives the boolean {@link ScoringSignals} from a Lead's
-// freshly-read snapshot and persists the recomputed `{ score, band }` through
-// the `LeadRepository` interface.
+// {@link ScoringEngine} the Inbound_Handler depends on (Req 11.1, 12). The
+// scoring MATH is the pure `@/core/scoring` (`computeBaseScore`) and
+// `@/core/classify` (`classify`); this module only derives the boolean
+// {@link ScoringSignals} from a Lead's freshly-read snapshot and persists the
+// recomputed `{ score, band }` through the `LeadRepository` interface.
 //
 // Side-effect boundary: reads the Lead via `LeadRepository.findById` and writes
 // the recomputed score/band via `LeadRepository.updateScore` — no other I/O.
@@ -17,8 +16,8 @@
 // score is derived from the Lead's persisted qualification fields plus the
 // reply-timing columns on the snapshot. The behavioral bumps (`applyBehavioral`)
 // depend on the inbound message text/timing, which `recompute(leadId)` does not
-// receive, so they are applied by the agent turn elsewhere — this engine
-// computes the base score per Req 10 and classifies it per Req 12.
+// receive — this engine computes the base score per Req 10 and classifies it
+// per Req 12.
 
 import { classify } from "@/core/classify";
 import { computeBaseScore } from "@/core/scoring";
@@ -28,8 +27,24 @@ import type {
 	LeadSnapshot,
 	ScoringSignals,
 } from "@/core/types";
-import type { ScoringEngine } from "@/services/qualification-agent";
 import type { LeadRepository } from "@/services/repositories";
+
+/**
+ * I/O boundary that recomputes a Lead's Score from its current qualification
+ * and behavioral signals and classifies the resulting band (Req 11.1, 12). The
+ * Inbound_Handler calls this on every inbound reply; the concrete
+ * {@link ScoringEngineService} below wraps the pure `@/core/scoring` functions
+ * and the band classifier.
+ */
+export interface ScoringEngine {
+	/**
+	 * Recompute and persist the Lead's Score and classification band (Req 11.1,
+	 * 12, 19.4), returning the new values.
+	 */
+	recompute(
+		leadId: string,
+	): Promise<{ score: number; band: ClassificationBand }>;
+}
 
 /** The local business-hours window a reply counts as "in window" for (+5). */
 export interface SendWindowHours {

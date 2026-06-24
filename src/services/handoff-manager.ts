@@ -102,6 +102,27 @@ export interface HandoffManager {
 }
 
 // ---------------------------------------------------------------------------
+// Consultant notification boundary
+// ---------------------------------------------------------------------------
+
+/**
+ * Best-effort notification that a Lead has been handed off, so a human
+ * consultant is alerted on their own phone (rather than having to watch the
+ * CRM). Invoked by {@link HandoffManager} only when a Lead *newly* transitions
+ * to `HOT` — not on a redundant re-handoff of an already-`HOT` Lead — so a Lead
+ * that keeps replying does not re-alert the consultant on every message.
+ *
+ * Implementations must never throw into the handoff path: a notification is a
+ * courtesy and must not roll back or fail the handoff itself. The concrete
+ * {@link import("./handoff-notifier").WahaHandoffNotifier} sends a WhatsApp
+ * message with the Lead's context to the configured consultant number(s).
+ */
+export interface HandoffNotifier {
+	/** Alert the consultant(s) that `leadId` was handed off for `reason`. */
+	notify(leadId: string, reason: HandoffReason): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
 // Construction configuration
 // ---------------------------------------------------------------------------
 
@@ -113,6 +134,11 @@ export interface HandoffManagerConfig {
 	handoffEvents: HandoffRepository;
 	/** Persistence boundary for cancelling the Lead's pending outreach (Req 13.4). */
 	scheduledJobs: ScheduledJobRepository;
+	/**
+	 * Optional consultant alert, fired best-effort when a Lead newly becomes
+	 * `HOT`. Omitted in tests and when no consultant numbers are configured.
+	 */
+	notifier?: HandoffNotifier;
 }
 
 // ---------------------------------------------------------------------------
@@ -128,21 +154,24 @@ export class HandoffManagerService implements HandoffManager {
 	private readonly lifecycle: LifecycleManager;
 	private readonly handoffEvents: HandoffRepository;
 	private readonly scheduledJobs: ScheduledJobRepository;
+	private readonly notifier?: HandoffNotifier;
 
 	constructor(deps: HandoffManagerConfig) {
 		this.lifecycle = deps.lifecycle;
 		this.handoffEvents = deps.handoffEvents;
 		this.scheduledJobs = deps.scheduledJobs;
+		this.notifier = deps.notifier;
 	}
 
 	/** @inheritdoc */
 	async handoff(leadId: string, reason: HandoffReason): Promise<void> {
 		// 1. Transition to `HOT` immediately, regardless of the current funnel
 		//    stage (Req 13.1). `HOT` is a send-guard stop state, so persisting it
-		//    is the primary silencing signal (Req 13.4). The result is not
-		//    inspected — see the interface JSDoc for the idempotent/terminal
-		//    rejection cases; an unknown lead throws `UnknownLeadError`.
-		await this.lifecycle.apply(leadId, "HOT");
+		//    is the primary silencing signal (Req 13.4). The result drives only the
+		//    notification decision below — see the interface JSDoc for the
+		//    idempotent/terminal rejection cases; an unknown lead throws
+		//    `UnknownLeadError`.
+		const transition = await this.lifecycle.apply(leadId, "HOT");
 
 		// 2. Record the handoff event with its triggering reason (Req 13.2). With
 		//    the `HOT` state this makes the Lead and its already-persisted
@@ -155,6 +184,19 @@ export class HandoffManagerService implements HandoffManager {
 		//    last so the `HOT` silencing signal (step 1) is already persisted and
 		//    any in-flight job re-reading state is stopped by the send guard.
 		await this.scheduledJobs.cancelAllForLead(leadId);
+
+		// 4. Alert the consultant, best-effort, only when the Lead *newly* became
+		//    `HOT` (`transition.ok`). A redundant re-handoff of an already-`HOT`
+		//    Lead is rejected by the lifecycle manager, so a Lead that keeps
+		//    replying never re-alerts. A notification failure must never fail the
+		//    handoff itself, so it is swallowed.
+		if (transition.ok && this.notifier) {
+			try {
+				await this.notifier.notify(leadId, reason);
+			} catch (err) {
+				console.error("[handoff] consultant notification failed", leadId, err);
+			}
+		}
 	}
 }
 

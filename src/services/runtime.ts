@@ -21,7 +21,6 @@
 // need the live runtime import `@/services/runtime` explicitly (mirroring how
 // `@/db/client` is kept out of the `@/db` barrel).
 
-import { ChatOpenRouter } from "@langchain/openrouter";
 import { PgBoss } from "pg-boss";
 
 import { CADENCE_TEST_MODE, CADENCE_TOUCHES_COUNT } from "@/core/cadence";
@@ -54,9 +53,11 @@ import {
 	createHandoffManager,
 	type HandoffManager,
 } from "@/services/handoff-manager";
+import { createHandoffNotifier } from "@/services/handoff-notifier";
 import {
 	createInboundHandler,
 	type InboundHandler,
+	type InboundMessage,
 } from "@/services/inbound-handler";
 import {
 	type InboundProcessingJob,
@@ -87,20 +88,16 @@ import {
 	type OutboundSendRequest,
 	type OutboundWorker,
 } from "@/services/outbound-worker";
-import {
-	buildQualificationGraph,
-	type InboundMessage,
-	type QualificationAgent,
-	type ScoringEngine,
-} from "@/services/qualification-agent";
 import type { MessageRepository } from "@/services/repositories";
-import { createScoringEngine } from "@/services/scoring-engine";
+import {
+	createScoringEngine,
+	type ScoringEngine,
+} from "@/services/scoring-engine";
 import {
 	createWahaClient,
 	numberSessionResolverFromRepository,
 	type WahaClient,
 } from "@/services/waha-client";
-import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 
 // ---------------------------------------------------------------------------
 // Queue names (the durable pg-boss queues backing the schedulers/workers)
@@ -125,6 +122,49 @@ export const QUEUE_NAMES = {
 /** Connection string for the shared PostgreSQL instance (Tech: `DATABASE_URL`). */
 function connectionString(): string {
 	return process.env.DATABASE_URL ?? "postgres://localhost:5432/marko";
+}
+
+/**
+ * Parse the comma-separated consultant alert numbers from
+ * `CONSULTANT_NOTIFY_NUMBERS` into a trimmed, non-empty E.164 list. An unset or
+ * empty value yields `[]`, which disables the handoff notifier entirely.
+ */
+function parseConsultantNumbers(raw: string | undefined): string[] {
+	if (!raw) {
+		return [];
+	}
+	return raw
+		.split(",")
+		.map((entry) => entry.trim())
+		.filter((entry) => entry.length > 0);
+}
+
+/**
+ * Resolve the domain `numberId` the consultant alert is sent *from*. When
+ * `CONSULTANT_NOTIFY_FROM_NUMBER` is set it matches a registered number by
+ * session name or msisdn; otherwise (or on no match) it falls back to the first
+ * available number, then any registered number. Returns `undefined` when no
+ * number is registered, in which case the alert is skipped.
+ */
+async function resolveNotifyFromNumberId(
+	numbers: DrizzleNumberRepository,
+	configured: string | undefined,
+): Promise<string | undefined> {
+	if (configured) {
+		const all = await numbers.listAll();
+		const match = all.find(
+			(n) => n.sessionName === configured || n.msisdn === configured,
+		);
+		if (match) {
+			return match.id;
+		}
+	}
+	const available = await numbers.listAvailable();
+	if (available.length > 0) {
+		return available[0].id;
+	}
+	const all = await numbers.listAll();
+	return all[0]?.id;
 }
 
 /** Read a positive integer env var, falling back to `fallback` when unset/invalid. */
@@ -327,10 +367,37 @@ export function getRuntime(): Promise<Runtime> {
 				scheduledJobs,
 				lifecycle,
 			});
+			const waha = createWahaClient({
+				baseUrl: process.env.WAHA_BASE_URL ?? "http://localhost:3000",
+				apiKey: process.env.WAHA_API_KEY,
+				resolveNumber: numberSessionResolverFromRepository(numbers),
+				resolutionSession: process.env.WAHA_SESSION,
+			});
+			// Best-effort consultant alert on handoff (beta: env-configured). Only
+			// constructed when at least one consultant number is configured, so the
+			// handoff path stays a no-op for the notifier otherwise.
+			const consultantNumbers = parseConsultantNumbers(
+				process.env.CONSULTANT_NOTIFY_NUMBERS,
+			);
+			const handoffNotifier =
+				consultantNumbers.length > 0
+					? createHandoffNotifier({
+							waha,
+							leads,
+							consultantNumbers,
+							resolveFromNumberId: () =>
+								resolveNotifyFromNumberId(
+									numbers,
+									process.env.CONSULTANT_NOTIFY_FROM_NUMBER,
+								),
+							crmBaseUrl: process.env.CRM_BASE_URL,
+						})
+					: undefined;
 			const handoff = createHandoffManager({
 				lifecycle,
 				handoffEvents: handoffRepo,
 				scheduledJobs,
+				notifier: handoffNotifier,
 			});
 			const scoring = createScoringEngine({
 				leads,
@@ -344,12 +411,6 @@ export function getRuntime(): Promise<Runtime> {
 				numbers,
 				config: antiBanConfig,
 				clock,
-			});
-			const waha = createWahaClient({
-				baseUrl: process.env.WAHA_BASE_URL ?? "http://localhost:3000",
-				apiKey: process.env.WAHA_API_KEY,
-				resolveNumber: numberSessionResolverFromRepository(numbers),
-				resolutionSession: process.env.WAHA_SESSION,
 			});
 
 			// Durable queues.
@@ -542,29 +603,6 @@ async function processOutboundRequest(
 // ---------------------------------------------------------------------------
 
 /**
- * Build the chat model the qualification agent runs against (Req 8.1).
- * Uses OpenRouter (OpenAI-compatible API) with the model and key read from the
- * environment. Defaults to `openai/gpt-4o-mini`. Constructed lazily by the
- * worker so the web app never requires an LLM key to boot.
- */
-function createChatModel(): BaseChatModel {
-	const apiKey = process.env.OPENROUTER_API_KEY;
-	if (!apiKey) {
-		throw new Error(
-			"OPENROUTER_API_KEY is not set; the qualification agent cannot run (Req 8.1).",
-		);
-	}
-	const temperature = Number.parseFloat(
-		process.env.OPENROUTER_TEMPERATURE ?? "0.3",
-	);
-	return new ChatOpenRouter({
-		apiKey,
-		model: process.env.OPENROUTER_MODEL ?? "openai/gpt-4o-mini",
-		temperature: Number.isFinite(temperature) ? temperature : 0.3,
-	});
-}
-
-/**
  * Wrap a {@link MessageRepository} so `append` is idempotent on the inbound
  * `wa_message_id`: the webhook already persisted the raw inbound message before
  * enqueuing, so the worker-side {@link InboundHandler} must NOT insert it again
@@ -591,7 +629,7 @@ function idempotentInboundMessages(
 }
 
 /** Resolve the domain `numberId` for the WAHA session that received a message. */
-async function resolveNumberIdForSession(
+export async function resolveNumberIdForSession(
 	rt: Runtime,
 	session: string,
 ): Promise<string | undefined> {
@@ -601,19 +639,12 @@ async function resolveNumberIdForSession(
 
 /**
  * Compose the {@link InboundHandler} for the worker: wires the already-built
- * managers/repositories from the runtime to the qualification agent (compiled
- * over the OpenAI chat model), with the idempotent message wrapper so the
- * webhook's raw inbound is not re-persisted.
+ * managers/repositories from the runtime, with the idempotent message wrapper so
+ * the webhook's raw inbound is not re-persisted. In the beta flow a reply hands
+ * the Lead straight off to a consultant via {@link Runtime.handoff}; there is no
+ * AI qualification turn.
  */
 export function createRuntimeInboundHandler(rt: Runtime): InboundHandler {
-	const agent: QualificationAgent = buildQualificationGraph({
-		model: createChatModel(),
-		leads: rt.leads,
-		scoring: rt.scoring,
-		lifecycle: rt.lifecycle,
-		handoff: rt.handoff,
-		outbound: rt.outboundQueue,
-	});
 	return createInboundHandler({
 		leads: rt.leads,
 		messages: idempotentInboundMessages(rt.messages),
@@ -621,9 +652,8 @@ export function createRuntimeInboundHandler(rt: Runtime): InboundHandler {
 		compliance: rt.compliance,
 		cadence: rt.cadenceScheduler,
 		nurture: rt.nurtureScheduler,
-		lifecycle: rt.lifecycle,
 		scoring: rt.scoring,
-		agent,
+		handoff: rt.handoff,
 	});
 }
 
@@ -638,10 +668,10 @@ export function createRuntimeInboundHandler(rt: Runtime): InboundHandler {
  * envelope (an array of jobs carrying the typed payload) to a `process` call.
  *
  * Only the long-running worker calls this — the web app enqueues but never
- * consumes. This includes the inbound queue: its heavy pipeline (lifecycle
- * advance to QUALIFYING, scoring, and the LLM qualification turn) runs here via
- * {@link createRuntimeInboundHandler}, while the webhook only persists and
- * enqueues durably so no inbound delivery is lost.
+ * consumes. This includes the inbound queue: its pipeline (scoring and the
+ * handoff to a consultant) runs here via {@link createRuntimeInboundHandler},
+ * while the webhook only persists and enqueues durably so no inbound delivery is
+ * lost.
  */
 export async function registerWorkers(rt: Runtime): Promise<void> {
 	await rt.boss.work<CadenceTouchJob>(QUEUE_NAMES.cadence, async (jobs) => {
@@ -667,12 +697,12 @@ export async function registerWorkers(rt: Runtime): Promise<void> {
 	);
 
 	// Inbound processing: the webhook persists + enqueues each inbound message;
-	// this is the consumer that runs the heavy Inbound_Handler pipeline (sendSeen,
-	// opt-out, cadence/nurture cancellation, lifecycle advance to QUALIFYING,
-	// scoring, and the qualification agent turn). Previously unregistered, so
-	// replies were enqueued but never processed (GUIA_ARQUITETURA_COMPLETO §14.2
-	// #2). The message append is made idempotent so the raw inbound persisted at
-	// the webhook is not double-written (#3).
+	// this is the consumer that runs the Inbound_Handler pipeline (sendSeen,
+	// opt-out, cadence/nurture cancellation, scoring, and the handoff to a
+	// consultant). Previously unregistered, so replies were enqueued but never
+	// processed (GUIA_ARQUITETURA_COMPLETO §14.2 #2). The message append is made
+	// idempotent so the raw inbound persisted at the webhook is not double-written
+	// (#3).
 	const inboundHandler = createRuntimeInboundHandler(rt);
 	await rt.boss.work<InboundProcessingJob>(
 		QUEUE_NAMES.inbound,
@@ -700,9 +730,9 @@ export async function registerWorkers(rt: Runtime): Promise<void> {
 						leadId: job.data.leadId,
 					});
 				} catch (err) {
-					// Surface the real failure (most often the LLM qualification turn)
-					// rather than letting pg-boss retry it silently. Rethrow so the job
-					// is marked failed instead of acknowledged as done.
+					// Surface the real failure rather than letting pg-boss retry it
+					// silently. Rethrow so the job is marked failed instead of
+					// acknowledged as done.
 					console.error(
 						"[inbound] pipeline FAILED for lead",
 						job.data.leadId,

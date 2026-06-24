@@ -113,6 +113,7 @@ export type ScheduledJobStatus = (typeof scheduledJobStatuses)[number];
 
 /** Handoff trigger reason — constrains `handoff_events.reason` (Req 13). */
 export const handoffReasons = [
+	"replied",
 	"hot_score",
 	"frustration",
 	"out_of_data",

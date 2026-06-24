@@ -22,7 +22,7 @@ import {
 	WAHA_HMAC_HEADER,
 	type WahaWebhookDeps,
 } from "@/services";
-import { getRuntime } from "@/services/runtime";
+import { getRuntime, resolveNumberIdForSession } from "@/services/runtime";
 
 /**
  * Force the Node.js runtime: signature verification uses `node:crypto`
@@ -95,6 +95,11 @@ async function defaultWebhookDepsProvider(): Promise<WahaWebhookDeps> {
 		messages: runtime.messages,
 		queue: runtime.inboundQueue,
 		lids: runtime.waha,
+		// Outbound-echo ingestion: count a consultant's WhatsApp Web reply against
+		// the sending number's anti-ban cap (its history row is written by the
+		// service).
+		antiBan: runtime.antiBan,
+		resolveNumberId: (session) => resolveNumberIdForSession(runtime, session),
 	};
 }
 
