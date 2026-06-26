@@ -16,4 +16,6 @@ export default defineConfig({
 			process.env.DATABASE_URL ??
 			"postgres://postgres:uc2xwqob@localhost:5432/marko",
 	},
+	verbose: true,
+	strict: true,
 });

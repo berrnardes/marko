@@ -14,6 +14,7 @@ import type {
 	LifecycleState,
 	OptInStatus,
 	QualificationFields,
+	TemplateKey,
 	Touch,
 } from "@/core/types";
 
@@ -282,4 +283,23 @@ export interface HandoffRepository {
 	): Promise<HandoffRecord>;
 	/** List a Lead's handoff events in chronological order. */
 	listByLead(leadId: string): Promise<HandoffRecord[]>;
+}
+
+// ---------------------------------------------------------------------------
+// MessageTemplateRepository
+// ---------------------------------------------------------------------------
+
+/**
+ * Persistence boundary for the operator-editable cadence/nurture message
+ * templates. Only customized templates are stored; a key with no row falls back
+ * to the built-in default (`DEFAULT_TEMPLATES`), so {@link getAll} returns a
+ * partial map and {@link reset} deletes the row to restore the default.
+ */
+export interface MessageTemplateRepository {
+	/** Read all stored (customized) template bodies keyed by {@link TemplateKey}. */
+	getAll(): Promise<Partial<Record<TemplateKey, string>>>;
+	/** Insert or replace the stored body for a template key. */
+	upsert(key: TemplateKey, body: string): Promise<void>;
+	/** Delete the stored body for a key, restoring its built-in default. */
+	reset(key: TemplateKey): Promise<void>;
 }

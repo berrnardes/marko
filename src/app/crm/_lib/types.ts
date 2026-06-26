@@ -117,3 +117,35 @@ export interface NumberView {
 	/** ISO-8601 date string the warm-up ramp started. */
 	warmupStartDate: string;
 }
+
+// ---------------------------------------------------------------------------
+// Message templates (cadence + nurture editing)
+// ---------------------------------------------------------------------------
+
+/** An editable cadence/nurture message template as viewed in the CRM UI. */
+export interface TemplateView {
+	/** Template key: `"T1"`–`"T5"` or `"nurture"`. */
+	key: string;
+	/** Human label for the touch/message. */
+	label: string;
+	/** Short description of the message's purpose. */
+	description: string;
+	/** Current body (the stored custom body, or the built-in default). */
+	body: string;
+	/** The built-in default body, for the "restore default" action. */
+	default: string;
+	/** Whether the operator has customized this template (a row exists). */
+	isCustomized: boolean;
+}
+
+/** An insertable template placeholder with its PT-BR description. */
+export interface TemplatePlaceholderView {
+	token: string;
+	description: string;
+}
+
+/** The payload returned by `GET /api/crm/templates`. */
+export interface TemplatesResponse {
+	templates: TemplateView[];
+	placeholders: TemplatePlaceholderView[];
+}

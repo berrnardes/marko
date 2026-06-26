@@ -24,11 +24,13 @@
 import { PgBoss } from "pg-boss";
 
 import { CADENCE_TEST_MODE, CADENCE_TOUCHES_COUNT } from "@/core/cadence";
-import type { AntiBanConfig, Clock } from "@/core/types";
+import { createRefreshableMessageGenerator } from "@/core/messages";
+import type { AntiBanConfig, Clock, TemplateKey } from "@/core/types";
 import { DrizzleComplianceRepository } from "@/db/compliance-repository";
 import { DrizzleHandoffRepository } from "@/db/handoff-repository";
 import { DrizzleLeadRepository } from "@/db/lead-repository";
 import { DrizzleMessageRepository } from "@/db/message-repository";
+import { DrizzleMessageTemplateRepository } from "@/db/message-template-repository";
 import { DrizzleNumberRepository } from "@/db/number-repository";
 import { DrizzleScheduledJobRepository } from "@/db/scheduled-job-repository";
 import {
@@ -319,6 +321,15 @@ export interface Runtime {
 	messages: DrizzleMessageRepository;
 	numbers: DrizzleNumberRepository;
 	scheduledJobs: DrizzleScheduledJobRepository;
+	templates: DrizzleMessageTemplateRepository;
+	/**
+	 * Refresh the cadence/nurture message templates used by the workers. Called
+	 * at the start of each cadence/nurture job batch with the latest stored
+	 * templates so operator edits apply without restarting the worker.
+	 */
+	setMessageTemplates: (
+		templates: Partial<Record<TemplateKey, string>>,
+	) => void;
 	waha: WahaClient;
 	antiBan: AntiBanController;
 	lifecycle: LifecycleManager;
@@ -365,6 +376,14 @@ export function getRuntime(): Promise<Runtime> {
 			const messages = new DrizzleMessageRepository();
 			const numbers = new DrizzleNumberRepository();
 			const scheduledJobs = new DrizzleScheduledJobRepository();
+			const templates = new DrizzleMessageTemplateRepository();
+
+			// Operator-editable cadence/nurture message templates. The generator is
+			// injected into the cadence/nurture workers once; `setMessageTemplates`
+			// refreshes the bodies at the start of each job batch so edits take
+			// effect on the next job without rebuilding the workers.
+			const { generator: messageGenerator, setTemplates: setMessageTemplates } =
+				createRefreshableMessageGenerator();
 
 			// Pure-core-backed managers and controllers.
 			const lifecycle = createLifecycleManager({ leads });
@@ -447,11 +466,13 @@ export function getRuntime(): Promise<Runtime> {
 				lifecycle,
 				nurture: nurtureScheduler,
 				scheduledJobs,
+				messages: messageGenerator,
 			});
 			const nurtureWorker = createNurtureWorker({
 				leads,
 				outbound: outboundQueue,
 				nurture: nurtureScheduler,
+				messages: messageGenerator,
 			});
 			const outboundWorker = createOutboundWorker({
 				leads,
@@ -478,6 +499,8 @@ export function getRuntime(): Promise<Runtime> {
 				messages,
 				numbers,
 				scheduledJobs,
+				templates,
+				setMessageTemplates,
 				antiBan,
 				lifecycle,
 				compliance,
@@ -699,6 +722,9 @@ export function createRuntimeInboundHandler(rt: Runtime): InboundHandler {
  */
 export async function registerWorkers(rt: Runtime): Promise<void> {
 	await rt.boss.work<CadenceTouchJob>(QUEUE_NAMES.cadence, async (jobs) => {
+		// Refresh editable message templates so operator edits apply on the next
+		// batch without restarting the worker.
+		rt.setMessageTemplates(await rt.templates.getAll());
 		for (const job of jobs) {
 			console.log("Processing job:", job.data);
 			await rt.cadenceWorker.process(job.data);
@@ -706,6 +732,7 @@ export async function registerWorkers(rt: Runtime): Promise<void> {
 	});
 
 	await rt.boss.work<NurtureJob>(QUEUE_NAMES.nurture, async (jobs) => {
+		rt.setMessageTemplates(await rt.templates.getAll());
 		for (const job of jobs) {
 			await rt.nurtureWorker.process(job.data);
 		}

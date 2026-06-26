@@ -17,6 +17,7 @@ const LINKS: ReadonlyArray<{ href: string; label: string }> = [
 	{ href: "/crm/import", label: "Importar" },
 	{ href: "/crm/handoffs", label: "Repasses" },
 	{ href: "/crm/numbers", label: "Números" },
+	{ href: "/crm/mensagens", label: "Mensagens" },
 ];
 
 /** Whether `href` is the active section for the current `pathname`. */

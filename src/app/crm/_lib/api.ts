@@ -22,6 +22,8 @@ import type {
 	LeadDetailView,
 	LeadSummaryView,
 	NumberView,
+	TemplatesResponse,
+	TemplateView,
 } from "./types";
 
 /** Read JSON from a guarded endpoint, throwing a readable error on failure. */
@@ -42,6 +44,7 @@ export const crmKeys = {
 	lead: (leadId: string) => ["crm", "lead", leadId] as const,
 	handoffs: ["crm", "handoffs"] as const,
 	numbers: ["crm", "numbers"] as const,
+	templates: ["crm", "templates"] as const,
 };
 
 /** Fetch the lead list — lifecycle state + score per lead (Req 20.1). */
@@ -226,6 +229,76 @@ export function useDeleteNumber(): UseMutationResult<void, Error, string> {
 		},
 		onSuccess: () => {
 			void queryClient.invalidateQueries({ queryKey: crmKeys.numbers });
+		},
+	});
+}
+
+// ---------------------------------------------------------------------------
+// Cadence / nurture message templates
+// ---------------------------------------------------------------------------
+
+/** Fetch the editable message templates (T1–T5 + nurture) and placeholders. */
+export function useTemplates(): UseQueryResult<TemplatesResponse> {
+	return useQuery({
+		queryKey: crmKeys.templates,
+		queryFn: async () => getJson<TemplatesResponse>("/api/crm/templates"),
+	});
+}
+
+/** Save (customize) a template's body. */
+export function useSaveTemplate(): UseMutationResult<
+	TemplateView,
+	Error,
+	{ key: string; body: string }
+> {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: async (payload: { key: string; body: string }) => {
+			const response = await fetch("/api/crm/templates", {
+				method: "PUT",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(payload),
+				credentials: "same-origin",
+			});
+			if (!response.ok) {
+				const detail = (await response.json().catch(() => null)) as {
+					error?: string;
+				} | null;
+				throw new Error(
+					detail?.error ?? `Failed to save template (${response.status})`,
+				);
+			}
+			const data = (await response.json()) as { template: TemplateView };
+			return data.template;
+		},
+		onSuccess: () => {
+			void queryClient.invalidateQueries({ queryKey: crmKeys.templates });
+		},
+	});
+}
+
+/** Restore a template to its built-in default (deletes the stored row). */
+export function useResetTemplate(): UseMutationResult<TemplateView, Error, string> {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: async (key: string) => {
+			const response = await fetch(
+				`/api/crm/templates?key=${encodeURIComponent(key)}`,
+				{ method: "DELETE", credentials: "same-origin" },
+			);
+			if (!response.ok) {
+				const detail = (await response.json().catch(() => null)) as {
+					error?: string;
+				} | null;
+				throw new Error(
+					detail?.error ?? `Failed to reset template (${response.status})`,
+				);
+			}
+			const data = (await response.json()) as { template: TemplateView };
+			return data.template;
+		},
+		onSuccess: () => {
+			void queryClient.invalidateQueries({ queryKey: crmKeys.templates });
 		},
 	});
 }

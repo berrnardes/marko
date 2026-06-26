@@ -39,6 +39,13 @@ export type OptInStatus = "opt_in" | "opt_out";
 /** A single scheduled outreach touch within the 5-touch cadence (Req 3). */
 export type Touch = "T1" | "T2" | "T3" | "T4" | "T5";
 
+/**
+ * A key identifying an editable message template: the five cadence touches plus
+ * the monthly nurture message. Backs the `message_templates` table and the CRM
+ * message-editing UI.
+ */
+export type TemplateKey = Touch | "nurture";
+
 /** A Lead's qualification objective (Req 9, 19.2). */
 export type Objective = "housing" | "investment";
 

@@ -38,6 +38,7 @@ import type {
 	LifecycleState,
 	Objective,
 	OptInStatus,
+	TemplateKey,
 	Touch,
 } from "@/core/types";
 
@@ -93,6 +94,16 @@ export const touches = [
 	"T4",
 	"T5",
 ] as const satisfies readonly Touch[];
+
+/** All {@link TemplateKey} values — constrains `message_templates.template_key`. */
+export const templateKeys = [
+	"T1",
+	"T2",
+	"T3",
+	"T4",
+	"T5",
+	"nurture",
+] as const satisfies readonly TemplateKey[];
 
 /** Persisted message direction — constrains `messages.direction` (Req 19.3). */
 export const messageDirections = ["inbound", "outbound"] as const;
@@ -415,5 +426,33 @@ export const importRows = pgTable(
 	},
 	(table) => [
 		enumCheck("import_rows_outcome_check", table.outcome, importOutcomes),
+	],
+);
+
+// ---------------------------------------------------------------------------
+// message_templates
+// ---------------------------------------------------------------------------
+
+/**
+ * Operator-editable cadence/nurture message templates. One row per
+ * {@link TemplateKey}; a missing row means the built-in default template is
+ * used (so a fresh database needs no seed, and "reset to default" deletes the
+ * row). `body` carries the template text with `{placeholder}` variables.
+ */
+export const messageTemplates = pgTable(
+	"message_templates",
+	{
+		templateKey: text("template_key").$type<TemplateKey>().primaryKey(),
+		body: text("body").notNull(),
+		updatedAt: timestamp("updated_at", { withTimezone: true })
+			.notNull()
+			.defaultNow(),
+	},
+	(table) => [
+		enumCheck(
+			"message_templates_template_key_check",
+			table.templateKey,
+			templateKeys,
+		),
 	],
 );
