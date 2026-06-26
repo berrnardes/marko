@@ -61,8 +61,10 @@ export const STOP_STATES: ReadonlySet<LifecycleState> = new Set([
  *   - the lead's lifecycle state is one of the {@link STOP_STATES} —
  *     `REPLIED`, `QUALIFYING`, `HOT`, `WARM`, `DISQUALIFIED`, `OPTED_OUT`
  *     (Req 5.2);
- *   - the lead's block flag is set (Req 5.3, 18.2); or
- *   - the lead's opt-in status is `"opt_out"` (Req 4.6, 5.4, 15.3).
+ *   - the lead's block flag is set (Req 5.3, 18.2);
+ *   - the lead's opt-in status is `"opt_out"` (Req 4.6, 5.4, 15.3); or
+ *   - the lead is marked unreachable — WAHA confirmed the number does not exist
+ *     on WhatsApp at send time, so no further automated outreach is attempted.
  *
  * Otherwise returns `"send"`. The conditions are an inclusive OR: a lead that
  * triggers several of them still yields a single `"skip_and_cancel"`.
@@ -74,7 +76,8 @@ export function evaluateSendGuard(lead: LeadSnapshot): GuardDecision {
 	if (
 		STOP_STATES.has(lead.lifecycleState) ||
 		lead.blocked ||
-		lead.optInStatus === "opt_out"
+		lead.optInStatus === "opt_out" ||
+		lead.unreachableAt != null
 	) {
 		return "skip_and_cancel";
 	}

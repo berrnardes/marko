@@ -39,6 +39,7 @@ function makeLead(overrides: Partial<LeadSnapshot> = {}): LeadSnapshot {
 		optInAt: null,
 		score: 0,
 		blocked: false,
+		unreachableAt: null,
 		classificationBand: null,
 		qualification: {
 			segment: null,
@@ -122,6 +123,10 @@ function antiBanWith(
 /** Build a `WahaClient` recording call order into `order`. */
 function wahaRecording(order: string[], waMessageId = "wamid.1"): WahaClient {
 	return {
+		resolveSendTarget: vi.fn(async () => {
+			order.push("resolveSendTarget");
+			return { reachable: true, chatId: "5511987654321@c.us" };
+		}),
 		resolveChatId: vi.fn(async () => {
 			order.push("resolveChatId");
 			return "5511987654321@c.us";
@@ -352,7 +357,7 @@ describe("OutboundWorker.process", () => {
 		// Typing presence is started before the single send (Req 17.2), and the
 		// indicator is stopped afterwards.
 		expect(order).toEqual([
-			"resolveChatId",
+			"resolveSendTarget",
 			"startTyping",
 			"sendText",
 			"stopTyping",
@@ -399,7 +404,7 @@ describe("OutboundWorker.process", () => {
 		// Counter is incremented only on a confirmed send: no commit on failure.
 		expect(calls).toHaveLength(0);
 		expect(order).toEqual([
-			"resolveChatId",
+			"resolveSendTarget",
 			"startTyping",
 			"sendText",
 			"stopTyping",
@@ -417,5 +422,35 @@ describe("OutboundWorker.process", () => {
 		});
 
 		await expect(worker.process(JOB)).rejects.toBeInstanceOf(UnknownLeadError);
+	});
+
+	it("drops as dropped_unreachable when WAHA reports the number does not exist — no send, no commit", async () => {
+		const order: string[] = [];
+		const waha = wahaRecording(order);
+		// The existence gate reports the number is not on WhatsApp.
+		(
+			waha.resolveSendTarget as ReturnType<typeof vi.fn>
+		).mockImplementation(async () => {
+			order.push("resolveSendTarget");
+			return { reachable: false };
+		});
+		const { committer, calls } = recordingCommitter();
+		const worker = createOutboundWorker({
+			leads: leadRepoReturning(makeLead()),
+			antiBan: antiBanWith("allow"),
+			waha,
+			commit: committer,
+			clock,
+			sleep,
+		});
+
+		const outcome = await worker.process(JOB);
+
+		expect(outcome).toEqual({ status: "dropped_unreachable", leadId: "lead-1" });
+		// No send is attempted and the daily cap is never incremented.
+		expect(waha.sendText).not.toHaveBeenCalled();
+		expect(calls).toHaveLength(0);
+		// The gate ran but typing/sending never started.
+		expect(order).toEqual(["resolveSendTarget"]);
 	});
 });

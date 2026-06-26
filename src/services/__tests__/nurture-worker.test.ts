@@ -33,6 +33,7 @@ function makeLead(overrides: Partial<LeadSnapshot> = {}): LeadSnapshot {
 		optInAt: null,
 		score: 0,
 		blocked: false,
+		unreachableAt: null,
 		classificationBand: null,
 		qualification: {
 			segment: "imóvel",

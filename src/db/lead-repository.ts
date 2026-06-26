@@ -38,6 +38,7 @@ function toSnapshot(row: LeadRow): LeadSnapshot {
 		optInAt: row.optInAt,
 		score: row.score,
 		blocked: row.blocked,
+		unreachableAt: row.unreachableAt,
 		classificationBand: row.classificationBand,
 		qualification: {
 			segment: row.segment,
@@ -161,6 +162,14 @@ export class DrizzleLeadRepository implements LeadRepository {
 		await this.database
 			.update(leads)
 			.set({ blocked, updatedAt: new Date() })
+			.where(eq(leads.id, leadId));
+	}
+
+	/** @inheritdoc */
+	async markUnreachable(leadId: string, at: Date): Promise<void> {
+		await this.database
+			.update(leads)
+			.set({ unreachableAt: at, updatedAt: new Date() })
 			.where(eq(leads.id, leadId));
 	}
 

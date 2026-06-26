@@ -159,6 +159,12 @@ export interface LeadRepository {
 	setOptInStatus(leadId: string, status: OptInStatus, at: Date): Promise<void>;
 	/** Set or clear the per-lead block flag (Req 5.3). */
 	setBlocked(leadId: string, blocked: boolean): Promise<void>;
+	/**
+	 * Mark the lead unreachable on WhatsApp: WAHA confirmed its number does not
+	 * exist at send time, so automated outreach stops (the send guard treats
+	 * `unreachableAt != null` as a stop condition).
+	 */
+	markUnreachable(leadId: string, at: Date): Promise<void>;
 	/** Assign the lead to a consultant on handoff (Req 13). */
 	assignConsultant(leadId: string, consultantId: string): Promise<void>;
 }

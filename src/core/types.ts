@@ -137,6 +137,12 @@ export interface LeadSnapshot {
 	score: number;
 	/** Anti-ban / block flag re-checked by the send guard (Req 5.3, 18). */
 	blocked: boolean;
+	/**
+	 * When set, WAHA confirmed the lead's number does not exist on WhatsApp at
+	 * send time; the send guard treats it as a terminal stop condition so no
+	 * further automated outreach is attempted (see {@link evaluateSendGuard}).
+	 */
+	unreachableAt: Date | null;
 	/** Current score-band label, when classified (Req 12). */
 	classificationBand: ClassificationBand | null;
 	/** Progressively-filled qualification fields. */

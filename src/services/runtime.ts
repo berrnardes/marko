@@ -220,7 +220,16 @@ function getBoss(): Promise<PgBoss> {
 			});
 			await boss.start();
 			await Promise.all(
-				Object.values(QUEUE_NAMES).map((name) => boss.createQueue(name)),
+				Object.values(QUEUE_NAMES).map((name) =>
+					// Retry only the outbound send queue: a transient WAHA/network
+					// failure in `sendText` should be retried (3 attempts, exponential
+					// backoff) rather than silently dropped. A non-existent number is
+					// NOT a throw here — the worker returns `dropped_unreachable` and
+					// the job is acknowledged — so it is never retried.
+					name === QUEUE_NAMES.outbound
+						? boss.createQueue(name, { retryLimit: 3, retryBackoff: true })
+						: boss.createQueue(name),
+				),
 			);
 			return boss;
 		})();
@@ -575,6 +584,20 @@ async function processOutboundRequest(
 			case "sent":
 			case "dropped_opt_out":
 			case "dropped_stopped":
+				return;
+			case "dropped_unreachable":
+				// WAHA confirmed the number does not exist on WhatsApp. Mark the lead
+				// unreachable and cancel its pending cadence + nurture jobs so no
+				// further automated outreach is attempted (same outreach-stopping
+				// pattern the inbound handler uses on a reply). Terminal: the job is
+				// acknowledged (no throw), so it is never retried.
+				await rt.leads.markUnreachable(request.leadId, now);
+				await rt.cadenceScheduler.cancelAll(request.leadId);
+				await rt.nurtureScheduler.cancel(request.leadId);
+				console.warn(
+					"[outbound] number unreachable on WhatsApp; lead marked + outreach cancelled",
+					request.leadId,
+				);
 				return;
 			case "blocked":
 			case "deferred_cap":

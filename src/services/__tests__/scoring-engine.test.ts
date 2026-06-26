@@ -41,6 +41,7 @@ function snapshot(
 		optInAt: null,
 		score: 0,
 		blocked: false,
+		unreachableAt: null,
 		classificationBand: null,
 		assignedConsultantId: null,
 		lastOutboundAt: null,

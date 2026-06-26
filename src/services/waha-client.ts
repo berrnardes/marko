@@ -41,6 +41,18 @@ export interface WahaClient {
 	 */
 	resolveChatId(e164: string): Promise<string>;
 	/**
+	 * Resolve an E.164 number to a send target, distinguishing a number WAHA
+	 * confirms does NOT exist on WhatsApp (`{ reachable: false }`) from one that
+	 * exists or cannot be checked (`{ reachable: true, chatId }`). Used by the
+	 * outbound choke point to gate the send: an unreachable number is dropped
+	 * (and the lead marked unreachable) rather than sent into the void.
+	 *
+	 * Only Brazilian mobile candidates with a configured resolution session are
+	 * checked; any other number, or any check failure, resolves as `reachable`
+	 * with the naive chat id so a transient problem never blocks a send.
+	 */
+	resolveSendTarget(e164: string): Promise<SendTarget>;
+	/**
 	 * Send an outbound text message and return its WAHA message id (Req 17.2
 	 * path). Refuses to send from a number whose block flag is set (Req 18.2).
 	 */
@@ -67,6 +79,17 @@ export interface WahaClient {
 	 */
 	resolveLidToPhone(session: string, lid: string): Promise<string | null>;
 }
+
+/**
+ * The outcome of resolving an E.164 number to an outbound send target:
+ *
+ *   - `{ reachable: true, chatId }`  — send to this canonical/naive chat id.
+ *   - `{ reachable: false }`         — WAHA confirmed the number does not exist
+ *     on WhatsApp; the caller must not send and should mark the lead unreachable.
+ */
+export type SendTarget =
+	| { reachable: true; chatId: string }
+	| { reachable: false };
 
 // ---------------------------------------------------------------------------
 // Injectable transport + session seams
@@ -167,6 +190,18 @@ interface CheckExistsResponse {
 	numberExists?: boolean;
 	chatId?: string;
 }
+
+/**
+ * The interpreted result of an existence check:
+ *   - `exists`    — WAHA confirms the number, with its canonical chat id.
+ *   - `not_found` — WAHA confirms the number does not exist (`numberExists: false`).
+ *   - `unknown`   — the response was indeterminate/malformed (treated as a
+ *     best-effort "reachable" by callers, never blocking a send).
+ */
+type ExistenceCheck =
+	| { kind: "exists"; chatId: string }
+	| { kind: "not_found" }
+	| { kind: "unknown" };
 
 /** Read a response body as text without throwing, for error diagnostics. */
 async function safeReadText(res: Response): Promise<string | undefined> {
@@ -357,8 +392,32 @@ export class HttpWahaClient implements WahaClient {
 		await this.post(path, { chatId, presence });
 	}
 
+	/** @inheritdoc */
+	async resolveSendTarget(e164: string): Promise<SendTarget> {
+		return this.resolveTargetUncached(e164);
+	}
+
 	/** Resolve a canonical `chatId` without consulting the cache. */
 	private async resolveChatIdUncached(e164: string): Promise<string> {
+		// The chat-id path never reports unreachability (callers such as the
+		// inbound read-receipt path have already received a message FROM the
+		// number, so it exists): collapse a `not_found` result to the naive form.
+		const target = await this.resolveTargetUncached(e164);
+		return target.reachable ? target.chatId : `${e164.replace(/\D+/g, "")}@c.us`;
+	}
+
+	/**
+	 * Resolve an E.164 number to a send target, distinguishing a number WAHA
+	 * confirms does NOT exist on WhatsApp (`{ reachable: false }`) from one that
+	 * exists or cannot be checked (`{ reachable: true, chatId }`).
+	 *
+	 * The existence check only runs for Brazilian mobile candidates with a
+	 * configured `resolutionSession`; everything else — and any check failure or
+	 * malformed response — falls back to the naive `<digits>@c.us` form as
+	 * `reachable`, so a transient WAHA problem never blocks a send (best-effort).
+	 * Only an explicit `numberExists: false` yields `{ reachable: false }`.
+	 */
+	private async resolveTargetUncached(e164: string): Promise<SendTarget> {
 		const digits = e164.replace(/\D+/g, "");
 		if (digits.length === 0) {
 			throw new WahaError(
@@ -370,28 +429,33 @@ export class HttpWahaClient implements WahaClient {
 		// that the existence check disambiguates; everything else uses the naive
 		// form. The check also needs a configured resolution session.
 		if (!this.resolutionSession || !isBrazilianMobileCandidate(digits)) {
-			return naive;
+			return { reachable: true, chatId: naive };
 		}
 		try {
-			const canonical = await this.checkPhoneExists(
-				digits,
-				this.resolutionSession,
-			);
-			return canonical ?? naive;
+			const check = await this.checkPhoneExists(digits, this.resolutionSession);
+			switch (check.kind) {
+				case "exists":
+					return { reachable: true, chatId: check.chatId };
+				case "not_found":
+					return { reachable: false };
+				case "unknown":
+					return { reachable: true, chatId: naive };
+			}
 		} catch {
 			// Best-effort: never block a send because the existence check failed.
-			return naive;
+			return { reachable: true, chatId: naive };
 		}
 	}
 
 	/**
-	 * Call WAHA's "check phone number exists" endpoint, returning the canonical
-	 * `chatId` when WAHA reports the number exists, else `null`.
+	 * Call WAHA's "check phone number exists" endpoint, distinguishing a
+	 * confirmed-existing number (with its canonical `chatId`), a confirmed
+	 * non-existent number, and an indeterminate/malformed response.
 	 */
 	private async checkPhoneExists(
 		digits: string,
 		session: string,
-	): Promise<string | null> {
+	): Promise<ExistenceCheck> {
 		const query = new URLSearchParams({ phone: digits, session });
 		const res = await this.get(
 			`/api/contacts/check-exists?${query.toString()}`,
@@ -402,9 +466,12 @@ export class HttpWahaClient implements WahaClient {
 			typeof payload.chatId === "string" &&
 			payload.chatId.length > 0
 		) {
-			return payload.chatId;
+			return { kind: "exists", chatId: payload.chatId };
 		}
-		return null;
+		if (payload?.numberExists === false) {
+			return { kind: "not_found" };
+		}
+		return { kind: "unknown" };
 	}
 
 	/** Issue a `POST` with a JSON body, throwing {@link WahaError} on non-2xx. */

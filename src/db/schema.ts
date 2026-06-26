@@ -191,6 +191,12 @@ export const leads = pgTable(
 		score: integer("score").notNull().default(0),
 		/** Per-lead block flag re-checked by the send guard (Req 5.3, 18). */
 		blocked: boolean("blocked").notNull().default(false),
+		/**
+		 * Set when WAHA confirmed the number does not exist on WhatsApp at send
+		 * time; the send guard treats a non-null value as a stop condition so no
+		 * further automated outreach is attempted.
+		 */
+		unreachableAt: timestamp("unreachable_at", { withTimezone: true }),
 		// Progressively-collected qualification fields, all nullable (Req 9.4, 19.2).
 		segment: text("segment"),
 		creditValue: numeric("credit_value", { mode: "number" }),

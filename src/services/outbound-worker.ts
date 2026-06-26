@@ -153,6 +153,10 @@ export interface OutboundSendQueue {
  *     caller reschedules the job to the window reopening (Req 17.4).
  *   - `"deferred_cap"`    — the number reached its current daily cap; the caller
  *     reschedules the job to the next day (Req 16.2).
+ *   - `"dropped_unreachable"` — WAHA confirmed the lead's number does not exist
+ *     on WhatsApp, so nothing is sent. The caller marks the lead unreachable and
+ *     cancels its pending outreach. Terminal: the job must not be retried, and
+ *     the daily cap is NOT incremented (no send occurred).
  */
 export type OutboundSendOutcome =
 	| {
@@ -164,6 +168,7 @@ export type OutboundSendOutcome =
 	  }
 	| { status: "dropped_opt_out"; leadId: string }
 	| { status: "dropped_stopped"; leadId: string }
+	| { status: "dropped_unreachable"; leadId: string }
 	| { status: "blocked"; leadId: string; numberId: string }
 	| { status: "deferred_window"; leadId: string; numberId: string }
 	| { status: "deferred_cap"; leadId: string; numberId: string };
@@ -383,9 +388,17 @@ export class OutboundWorkerService implements OutboundWorker {
 			return lateStop;
 		}
 
-		// Resolve the canonical WhatsApp chat id from the lead's E.164 at send
-		// time (handles the Brazilian pre-2012 ambiguity inside the client).
-		const chatId = await this.waha.resolveChatId(freshLead.phoneE164);
+		// Existence gate: resolve the lead's E.164 to a send target at send time
+		// (handles the Brazilian pre-2012 ambiguity inside the client). When WAHA
+		// confirms the number does not exist on WhatsApp, drop the send as terminal
+		// `dropped_unreachable` — the caller marks the lead unreachable and cancels
+		// its outreach, and the daily cap is never touched (no send occurs). Any
+		// other case (existing, non-checkable, or a check failure) is reachable.
+		const target = await this.waha.resolveSendTarget(freshLead.phoneE164);
+		if (!target.reachable) {
+			return { status: "dropped_unreachable", leadId };
+		}
+		const chatId = target.chatId;
 
 		// 6–7. Simulate typing presence before sending (Req 17.2), then perform
 		//      the single WAHA send. Typing presence is a best-effort human-like

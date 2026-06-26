@@ -23,6 +23,7 @@ const LEAD: LeadSnapshot = {
 	optInAt: null,
 	score: 0,
 	blocked: false,
+	unreachableAt: null,
 	classificationBand: null,
 	qualification: {
 		segment: null,
