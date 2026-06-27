@@ -197,3 +197,77 @@ recusaria esse lockfile no `npm ci`.
 - [ ] `docker compose ... up -d --build` rodando; worker em `running`.
 - [ ] Sessão do WAHA autenticada (QR) e webhook apontando para a Vercel.
 - [ ] Vercel com a conexão **POOLED** (6543) e demais env vars.
+
+---
+
+## CI/CD com GitHub Actions
+
+O deploy manual (`git pull && docker compose ... up -d --build`) continua
+funcionando, mas o repositório agora traz dois workflows que automatizam tudo:
+
+| Workflow                              | Quando roda                  | O que faz                                                                  |
+| ------------------------------------- | ---------------------------- | -------------------------------------------------------------------------- |
+| `.github/workflows/ci.yml`            | todo push e pull request     | `npm run lint`, `typecheck` e `test`.                                      |
+| `.github/workflows/deploy-worker.yml` | push para `main` (ou manual) | builda a imagem do worker, publica no GHCR e reinicia o worker na Hetzner. |
+
+### Como o deploy funciona
+
+1. **Build + push** — o Actions builda `Dockerfile.worker` e publica em
+   `ghcr.io/OWNER/marko-worker` com as tags `latest` e o SHA do commit (cache de
+   build via GitHub Actions cache, então builds repetidos são rápidos).
+2. **Migrations (opcional)** — se a variável de repositório `RUN_MIGRATIONS`
+   estiver `true`, roda `npm run db:migrate` contra o `DATABASE_URL` (use a
+   conexão **DIRETA** do Supabase aqui também).
+3. **Deploy** — o Actions faz SSH na Hetzner, `git pull` (para atualizar os
+   arquivos de compose), puxa a imagem nova do GHCR e recria **só** o serviço
+   `worker` com `docker-compose.prod.yml`. O WAHA não é reiniciado.
+
+O app Next.js **não** entra nesse fluxo — ele é deployado pela Vercel via a
+integração git dela.
+
+### O que configurar uma vez
+
+**1. Secrets do repositório** (Settings → Secrets and variables → Actions → _Secrets_):
+
+| Secret             | Para quê                                                                                            |
+| ------------------ | --------------------------------------------------------------------------------------------------- |
+| `HETZNER_HOST`     | IP/hostname do servidor.                                                                            |
+| `HETZNER_USER`     | usuário SSH (ex.: `root` ou `deploy`).                                                              |
+| `HETZNER_SSH_KEY`  | chave **privada** SSH com acesso ao servidor.                                                       |
+| `HETZNER_SSH_PORT` | (opcional) porta SSH; default `22`.                                                                 |
+| `GHCR_PULL_TOKEN`  | (opcional) PAT com `read:packages` para o servidor puxar a imagem se o pacote GHCR for **privado**. |
+| `DATABASE_URL`     | (opcional) conexão DIRETA do Supabase, se for rodar migrations no CI.                               |
+
+> O push para o GHCR usa o `GITHUB_TOKEN` automático (com `packages: write`) —
+> não precisa de secret para isso. O `GHCR_PULL_TOKEN` só é necessário do lado
+> do servidor; se você tornar o pacote GHCR público, pode dispensá-lo.
+
+**2. Variável** (aba _Variables_, não Secrets): `RUN_MIGRATIONS=true` se quiser
+que o CI aplique migrations no deploy. Caso prefira controlar isso na mão,
+deixe ausente e remova/ignore o job `migrate`.
+
+**3. Chave SSH** — gere um par dedicado ao deploy e autorize a pública no
+servidor:
+
+```bash
+ssh-keygen -t ed25519 -C "github-actions-deploy" -f deploy_key
+# copie deploy_key.pub para ~/.ssh/authorized_keys no servidor
+# cole o conteúdo de deploy_key (a privada) no secret HETZNER_SSH_KEY
+```
+
+**4. Imagem no compose** — edite `docker-compose.prod.yml` e troque `OWNER` pelo
+dono do repositório no GitHub (em minúsculas), ex.: `ghcr.io/bernardes/marko-worker:latest`.
+
+**5. Servidor** — o servidor precisa ter o repositório clonado em `~/marko`
+(como no Passo 3) e o `.env.production` preenchido (Passo 4). O CI não cria
+esses arquivos; ele só atualiza o código e reinicia o container.
+
+> `docker-compose.prod.yml` usa a tag de merge `!reset` para remover o `build:`
+> local — requer Docker Compose **v2.24+**. Confira com `docker compose version`.
+
+### Primeiro deploy
+
+Faça o setup dos Passos 1–6 manualmente uma vez (migrations, `.env.production`,
+sessão WAHA autenticada). A partir daí, todo push para `main` que passar no CI
+reconstrói e reinicia o worker sozinho. Também dá para disparar pela aba
+**Actions → Deploy worker (Hetzner) → Run workflow**.

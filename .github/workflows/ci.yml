@@ -1,0 +1,39 @@
+# CI — roda em todo push e pull request.
+#
+# Verifica o que importa antes de qualquer deploy: lint, typecheck e a suíte de
+# testes (Vitest + property-based). NÃO faz deploy — isso é responsabilidade do
+# workflow deploy-worker.yml, que só dispara no push para `main`.
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  verify:
+    name: Lint, typecheck e testes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Testes
+        run: npm run test

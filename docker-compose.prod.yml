@@ -1,0 +1,22 @@
+# Override de produção para o deploy via CI/CD (GitHub Actions → Hetzner).
+#
+# Em vez de buildar o worker a partir do código-fonte na máquina (como faz o
+# `docker-compose.yml` base com `build:`), aqui o worker usa a imagem já
+# publicada no GHCR pelo workflow deploy-worker.yml. Assim o servidor não
+# precisa de toolchain de build nem do código-fonte para subir — só puxa a
+# imagem pronta.
+#
+# Uso no servidor (o CI faz isso automaticamente):
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+#     --env-file .env.production pull worker
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+#     --env-file .env.production up -d worker
+#
+# Troque OWNER pelo dono do repositório no GitHub (org ou usuário), em
+# minúsculas. Ex.: ghcr.io/bernardes/marko-worker:latest
+
+services:
+  worker:
+    # Remove o build local; passa a usar a imagem publicada no GHCR.
+    build: !reset null
+    image: ghcr.io/OWNER/marko-worker:latest

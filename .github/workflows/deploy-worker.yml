@@ -1,0 +1,134 @@
+# CD — build da imagem do worker + deploy na Hetzner.
+#
+# Dispara no push para `main` (após o CI passar). O fluxo é:
+#   1. build da imagem do worker (Dockerfile.worker) e push para o GitHub
+#      Container Registry (GHCR), com tags `latest` e o SHA do commit.
+#   2. (opcional) aplica migrations no Postgres do Supabase.
+#   3. SSH na máquina da Hetzner: faz `git pull`, puxa a nova imagem do GHCR e
+#      reinicia o serviço `worker` via docker compose.
+#
+# O app Next.js NÃO entra aqui — ele é deployado pela Vercel (integração git
+# própria). Este workflow cuida apenas do processo always-on da Hetzner.
+#
+# Secrets necessários (Settings → Secrets and variables → Actions):
+#   HETZNER_HOST          IP ou hostname do servidor Hetzner
+#   HETZNER_USER          usuário SSH (ex.: root ou deploy)
+#   HETZNER_SSH_KEY       chave PRIVADA SSH com acesso ao servidor
+#   HETZNER_SSH_PORT      (opcional) porta SSH; default 22
+#   DATABASE_URL          (opcional) conexão DIRETA do Supabase p/ migrations
+#   GHCR_PULL_TOKEN       (opcional) PAT read:packages p/ o servidor puxar a
+#                         imagem, caso o pacote GHCR seja privado
+
+name: Deploy worker (Hetzner)
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch: {} # permite disparo manual pela aba Actions
+
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/marko-worker
+
+jobs:
+  build-and-push:
+    name: Build e push da imagem
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Normalizar nome da imagem (lowercase)
+        id: meta
+        run: echo "image=$(echo "$IMAGE_NAME" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login no GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build e push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.worker
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:latest
+            ${{ steps.meta.outputs.image }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  migrate:
+    name: Aplicar migrations (Supabase)
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    # Só roda se o secret DATABASE_URL existir. Caso prefira rodar migrations
+    # manualmente, remova este job inteiro.
+    if: ${{ vars.RUN_MIGRATIONS == 'true' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: drizzle-kit migrate
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: npm run db:migrate
+
+  deploy:
+    name: Deploy na Hetzner
+    runs-on: ubuntu-latest
+    needs: [build-and-push, migrate]
+    # `migrate` pode ser pulado (skipped) se RUN_MIGRATIONS != true; ainda assim
+    # seguimos para o deploy.
+    if: ${{ always() && needs.build-and-push.result == 'success' && needs.migrate.result != 'failure' }}
+    steps:
+      - name: SSH e restart do worker
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.HETZNER_HOST }}
+          username: ${{ secrets.HETZNER_USER }}
+          key: ${{ secrets.HETZNER_SSH_KEY }}
+          port: ${{ secrets.HETZNER_SSH_PORT || 22 }}
+          script: |
+            set -euo pipefail
+            cd ~/marko
+
+            # Atualiza os arquivos de compose/config no servidor.
+            git pull --ff-only
+
+            # Login no GHCR para puxar a imagem (necessário se o pacote for
+            # privado). Usa um PAT read:packages guardado em secret.
+            echo "${{ secrets.GHCR_PULL_TOKEN }}" \
+              | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            # Puxa a nova imagem e recria só o worker. O WAHA não é tocado.
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+              --env-file .env.production pull worker
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+              --env-file .env.production up -d worker
+
+            # Limpa imagens antigas para não encher o disco.
+            docker image prune -f
