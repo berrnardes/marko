@@ -18,7 +18,8 @@
 		"typecheck": "tsc --noEmit",
 		"db:generate": "drizzle-kit generate",
 		"db:migrate": "drizzle-kit migrate",
-		"db:clear": "tsx --env-file=.env scripts/clear-db.ts"
+		"db:clear": "tsx --env-file=.env scripts/clear-db.ts",
+		"db:seed-admin": "tsx --env-file=.env scripts/seed-admin.ts"
 	},
 	"dependencies": {
 		"@tanstack/react-query": "^5.101.0",
