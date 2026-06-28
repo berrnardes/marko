@@ -20,6 +20,10 @@ services:
       - "3000:3000"
     environment:
       # Chave de API do WAHA (mesma que o worker usa em WAHA_API_KEY).
+      # ATENÇÃO: o WAHA atual lê WAHA_API_KEY. Se essa variável não estiver
+      # definida, o WAHA gera uma chave aleatória no startup (ver logs) e
+      # rejeita a sua com 401. Mantemos WHATSAPP_API_KEY por retrocompat.
+      - WAHA_API_KEY=${WAHA_API_KEY}
       - WHATSAPP_API_KEY=${WAHA_API_KEY}
       # Para onde o WAHA entrega os eventos inbound: o webhook do app na Vercel.
       - WHATSAPP_HOOK_URL=${WAHA_WEBHOOK_URL}
