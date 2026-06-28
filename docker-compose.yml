@@ -18,6 +18,12 @@ services:
       # Exponha a 3000 só se precisar acessar o dashboard/API do WAHA de fora.
       # Em produção, prefira deixar atrás de um proxy reverso com TLS.
       - "3000:3000"
+    # Carrega as credenciais persistentes do dashboard/swagger (e demais
+    # WAHA_*) do arquivo de produção. Sem isso, o WAHA gera senhas aleatórias
+    # de dashboard/swagger a cada restart (ver logs) e o /dashboard responde
+    # 401 com a senha antiga.
+    env_file:
+      - .env.production
     environment:
       # Chave de API do WAHA (mesma que o worker usa em WAHA_API_KEY).
       # ATENÇÃO: o WAHA atual lê WAHA_API_KEY. Se essa variável não estiver
