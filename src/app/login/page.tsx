@@ -19,7 +19,7 @@ export default async function LoginPage() {
 	}
 
 	return (
-		<main className="flex min-h-screen flex-col items-center justify-center gap-6 bg-surface">
+		<main className="flex min-h-screen flex-col items-center justify-center gap-6 bg-su">
 			<h1 className="text-xl font-semibold">Marko CRM</h1>
 			<Suspense fallback={null}>
 				<LoginForm />
