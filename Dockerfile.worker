@@ -8,7 +8,7 @@
 # As variáveis de ambiente (DATABASE_URL, WAHA_*, etc.) NÃO entram na imagem —
 # são injetadas em tempo de execução pelo docker-compose (env_file).
 
-FROM node:20-slim
+FROM node:26-slim
 
 # Diretório de trabalho da aplicação dentro do container.
 WORKDIR /app
