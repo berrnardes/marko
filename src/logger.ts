@@ -51,6 +51,11 @@ const REDACT_PATHS = [
 const root = pino({
 	level: process.env.LOG_LEVEL ?? (isProd ? "info" : "debug"),
 	base: { svc: process.env.SVC ?? "web" },
+	// Human-readable JSON: an ISO-8601 timestamp instead of epoch millis, and the
+	// level as a word ("info") instead of pino's numeric code (30). Both stay
+	// valid JSON, so the logs remain greppable / aggregator-friendly.
+	timestamp: pino.stdTimeFunctions.isoTime,
+	formatters: { level: (label) => ({ level: label }) },
 	redact: { paths: REDACT_PATHS, censor: "[redacted]" },
 	// Pretty, human-readable output in dev; pure JSON in prod so logs can be
 	// grepped and later shipped to an aggregator (Loki / Better Stack / Axiom)
