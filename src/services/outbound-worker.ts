@@ -102,6 +102,12 @@ export interface OutboundSendJob {
  * turns this request into the {@link OutboundSendJob} the worker processes.
  */
 export interface OutboundSendRequest {
+	/**
+	 * Optional per-flow trace id carried from the inbound flow that caused this
+	 * send, so the reply can be correlated back to the message that triggered it.
+	 * Absent for sends originated by cadence/nurture timers rather than a reply.
+	 */
+	correlationId?: string;
 	/** The lead the message is for. */
 	leadId: string;
 	/** The fully-rendered message text to send. */

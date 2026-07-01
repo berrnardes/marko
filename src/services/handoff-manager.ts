@@ -41,6 +41,7 @@
 // which is exactly what the CRM_UI handoff view reads.
 
 import type { HandoffReason } from "@/core/types";
+import { logger } from "@/logger";
 import type { LifecycleManager } from "@/services/lifecycle-manager";
 import type {
 	HandoffRepository,
@@ -194,7 +195,10 @@ export class HandoffManagerService implements HandoffManager {
 			try {
 				await this.notifier.notify(leadId, reason);
 			} catch (err) {
-				console.error("[handoff] consultant notification failed", leadId, err);
+				logger.error(
+					{ event: "handoff.notify_failed", leadId, err },
+					"consultant notification failed",
+				);
 			}
 		}
 	}

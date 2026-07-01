@@ -37,6 +37,12 @@ services:
     volumes:
       # Persiste a sessão autenticada (QR code) entre reinícios do container.
       - waha-sessions:/app/.sessions
+    # Rotaciona os logs para o disco do Hetzner não encher (o WAHA é verboso).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     networks:
       - marko
 
@@ -52,8 +58,19 @@ services:
       # Sobrescreve o endereço do WAHA para o hostname interno da rede Docker,
       # independentemente do que estiver no .env.production.
       - WAHA_BASE_URL=http://waha:3000
+      # Identifica este processo nos logs estruturados (campo `svc`) e força o
+      # logger a emitir JSON puro (sem pino-pretty) para agregação.
+      - SVC=worker
+      - NODE_ENV=production
     depends_on:
       - waha
+    # Rotaciona os logs JSON do worker para o disco do Hetzner não encher: no
+    # máximo 5 arquivos de 10 MB por serviço.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     networks:
       - marko
 

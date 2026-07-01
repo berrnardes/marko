@@ -9,10 +9,11 @@
 //
 // Run with: `npm run worker` (tsx src/worker/index.ts).
 
+import { logger } from "@/logger";
 import { getRuntime, registerWorkers } from "@/services/runtime";
 
 async function main(): Promise<void> {
-	console.log("[worker] starting…");
+	logger.info({ event: "worker.starting" }, "worker starting");
 
 	// Build (or reuse) the shared runtime: this starts pg-boss, creates the
 	// durable queues, and wires the cadence/nurture/outbound workers to the live
@@ -24,18 +25,22 @@ async function main(): Promise<void> {
 	// (it only enqueues), so the consumers live solely in this process.
 	await registerWorkers(runtime);
 
-	console.log(
-		"[worker] ready — cadence, nurture, and outbound handlers registered.",
+	logger.info(
+		{ event: "worker.ready" },
+		"worker ready — cadence, nurture, and outbound handlers registered",
 	);
 
 	// Graceful shutdown: stop pg-boss so in-flight jobs are released cleanly and
 	// the process exits without leaking the connection.
 	const shutdown = async (signal: string): Promise<void> => {
-		console.log(`[worker] received ${signal}, shutting down…`);
+		logger.info({ event: "worker.shutdown", signal }, "worker shutting down");
 		try {
 			await runtime.boss.stop();
 		} catch (err) {
-			console.error("[worker] error during shutdown:", err);
+			logger.error(
+				{ event: "worker.shutdown_error", err },
+				"error during worker shutdown",
+			);
 		} finally {
 			process.exit(0);
 		}
@@ -45,6 +50,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-	console.error("[worker] fatal error:", err);
+	logger.fatal({ event: "worker.fatal", err }, "worker fatal error");
 	process.exit(1);
 });

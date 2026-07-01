@@ -37,11 +37,12 @@
 // check is the only crypto here and is performed over the exact raw bytes the
 // caller read before JSON parsing, so the signature matches WAHA's.
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 
 import { z } from "zod";
 
 import { normalizePhone } from "@/core";
+import { logger } from "@/logger";
 import type { AntiBanController } from "@/services/anti-ban-controller";
 import type {
 	LeadRepository,
@@ -141,6 +142,12 @@ export type WahaMessageWebhook = z.infer<typeof WahaMessageWebhookSchema>;
  * is captured; the worker re-reads fresh Lead state at execution time.
  */
 export interface InboundProcessingJob {
+	/**
+	 * Per-flow trace id generated at the webhook. Bound onto every log line the
+	 * downstream pipeline emits (and carried onto the outbound send it triggers)
+	 * so one inbound message can be followed end to end across both processes.
+	 */
+	correlationId: string;
 	/** The Lead the message was attributed to (created if the sender was unknown). */
 	leadId: string;
 	/** The persisted inbound message id (the raw record persisted at the route). */
@@ -456,7 +463,13 @@ export async function processWahaWebhook(
 	//    re-persisting this message (the raw inbound is already recorded here),
 	//    e.g. by skipping the Inbound_Handler's own `messages.append` for an
 	//    already-persisted `wa_message_id`, so idempotency holds end-to-end.
+	const correlationId = randomUUID();
+	logger.info(
+		{ event: "inbound.received", correlationId, leadId: lead.id, session },
+		"inbound message accepted",
+	);
 	await deps.queue.enqueueInbound({
+		correlationId,
 		leadId: lead.id,
 		messageId: persisted.id,
 		waMessageId,
@@ -544,9 +557,9 @@ async function handleOutboundEcho(
 	// Audit (best-effort): a manual send to an opted-out Lead cannot be blocked
 	// (the human typed it directly), but it should be visible.
 	if (lead.optInStatus === "opt_out") {
-		console.warn(
-			"[inbound-webhook] manual outbound to an opted-out lead",
-			lead.id,
+		logger.warn(
+			{ event: "inbound.echo_opt_out", leadId: lead.id },
+			"manual outbound to an opted-out lead",
 		);
 	}
 

@@ -21,6 +21,7 @@
 
 import { classify } from "@/core/classify";
 import { computeBaseScore } from "@/core/scoring";
+import { logger } from "@/logger";
 import type {
 	ClassificationBand,
 	Clock,
@@ -174,8 +175,10 @@ export class ScoringEngineService implements ScoringEngine {
 		const band = classify(score);
 		await this.leads.updateScore(leadId, score, band);
 
-		// TODO: delete
-		console.log(`[SCORING ENGINE] Score: ${score} | Band: ${band}`);
+		logger.debug(
+			{ event: "scoring.evaluated", leadId, score, band },
+			"lead scored",
+		);
 		return { score, band };
 	}
 }

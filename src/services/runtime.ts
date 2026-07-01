@@ -33,6 +33,7 @@ import { DrizzleMessageRepository } from "@/db/message-repository";
 import { DrizzleMessageTemplateRepository } from "@/db/message-template-repository";
 import { DrizzleNumberRepository } from "@/db/number-repository";
 import { DrizzleScheduledJobRepository } from "@/db/scheduled-job-repository";
+import { childLogger, logger } from "@/logger";
 import {
 	createAntiBanController,
 	type AntiBanController,
@@ -218,7 +219,7 @@ function getBoss(): Promise<PgBoss> {
 		globalForBoss.__markoBoss = (async () => {
 			const boss = new PgBoss(connectionString());
 			boss.on("error", (err) => {
-				console.error("[pg-boss] error:", err);
+				logger.error({ event: "pgboss.error", err }, "pg-boss emitted error");
 			});
 			await boss.start();
 			await Promise.all(
@@ -361,9 +362,9 @@ export function getRuntime(): Promise<Runtime> {
 	if (!globalForRuntime.__markoRuntime) {
 		globalForRuntime.__markoRuntime = (async () => {
 			if (CADENCE_TEST_MODE) {
-				console.warn(
-					"[runtime] ⚠️  CADENCE_TEST_MODE is ON — offsets are in seconds, touches limited to",
-					CADENCE_TOUCHES_COUNT,
+				logger.warn(
+					{ event: "runtime.cadence_test_mode", touches: CADENCE_TOUCHES_COUNT },
+					"CADENCE_TEST_MODE is ON — offsets are in seconds",
 				);
 			}
 
@@ -563,17 +564,20 @@ async function processOutboundRequest(
 	request: OutboundSendRequest,
 ): Promise<void> {
 	const now = rt.clock.now();
-	console.log("[outbound] processing send", {
+	const log = childLogger({
+		correlationId: request.correlationId,
 		leadId: request.leadId,
-		kind: request.kind,
 	});
+	log.info(
+		{ event: "outbound.processing", kind: request.kind },
+		"processing outbound send",
+	);
 
 	// Outside the global send window → defer to the window reopening (Req 17.4).
 	if (!rt.antiBan.withinSendWindow()) {
-		console.warn(
-			"[outbound] outside send window; deferring",
-			request.leadId,
-			request.kind,
+		log.warn(
+			{ event: "outbound.deferred", kind: request.kind, reason: "window" },
+			"outside send window; deferring",
 		);
 		await rt.boss.send(QUEUE_NAMES.outbound, request, {
 			startAfter: nextSendWindowStart(rt.antiBanConfig, now),
@@ -583,9 +587,10 @@ async function processOutboundRequest(
 
 	const candidates = await rt.numbers.listAvailable();
 	if (candidates.length === 0) {
-		console.warn(
-			"[outbound] no available WhatsApp numbers registered — nothing can be " +
-				"sent. Add a sending number in the CRM (Numbers page) / `numbers` table.",
+		log.warn(
+			{ event: "outbound.no_number" },
+			"no available WhatsApp numbers registered — nothing can be sent. Add a " +
+				"sending number in the CRM (Numbers page) / `numbers` table.",
 		);
 	}
 	for (const number of candidates) {
@@ -598,11 +603,10 @@ async function processOutboundRequest(
 			content: request.content,
 			kind: request.kind,
 		});
-		console.log("[outbound] send outcome", {
-			leadId: request.leadId,
-			numberId: number.id,
-			status: outcome.status,
-		});
+		log.info(
+			{ event: "outbound.outcome", numberId: number.id, status: outcome.status },
+			"outbound send outcome",
+		);
 		switch (outcome.status) {
 			case "sent":
 			case "dropped_opt_out":
@@ -617,9 +621,9 @@ async function processOutboundRequest(
 				await rt.leads.markUnreachable(request.leadId, now);
 				await rt.cadenceScheduler.cancelAll(request.leadId);
 				await rt.nurtureScheduler.cancel(request.leadId);
-				console.warn(
-					"[outbound] number unreachable on WhatsApp; lead marked + outreach cancelled",
-					request.leadId,
+				log.warn(
+					{ event: "outbound.unreachable", numberId: number.id },
+					"number unreachable on WhatsApp; lead marked + outreach cancelled",
 				);
 				return;
 			case "blocked":
@@ -635,10 +639,10 @@ async function processOutboundRequest(
 
 	// Every available number is blocked or at its daily cap → defer to the next
 	// day so the per-number cap is never exceeded (Req 16.2, 18.3).
-	console.warn(
-		"[outbound] no sendable number right now (none available, blocked, or " +
-			"at daily cap); deferring to next day",
-		{ leadId: request.leadId, kind: request.kind },
+	log.warn(
+		{ event: "outbound.deferred", kind: request.kind, reason: "cap" },
+		"no sendable number right now (none available, blocked, or at daily cap); " +
+			"deferring to next day",
 	);
 	await rt.boss.send(QUEUE_NAMES.outbound, request, {
 		startAfter: nextLocalMidnight(now),
@@ -726,7 +730,10 @@ export async function registerWorkers(rt: Runtime): Promise<void> {
 		// batch without restarting the worker.
 		rt.setMessageTemplates(await rt.templates.getAll());
 		for (const job of jobs) {
-			console.log("Processing job:", job.data);
+			logger.debug(
+				{ event: "job.processing", queue: QUEUE_NAMES.cadence, jobId: job.id },
+				"processing cadence job",
+			);
 			await rt.cadenceWorker.process(job.data);
 		}
 	});
@@ -769,25 +776,32 @@ export async function registerWorkers(rt: Runtime): Promise<void> {
 					waMessageId: job.data.waMessageId,
 					numberId,
 				};
-				console.log("[inbound] processing reply", {
+				const log = childLogger({
+					correlationId: job.data.correlationId,
 					leadId: job.data.leadId,
-					from: job.data.from,
-					numberId: numberId ?? "(no number matched session)",
-					session: job.data.session,
 				});
+				const startedAt = Date.now();
+				log.info(
+					{
+						event: "inbound.processing",
+						numberId: numberId ?? null,
+						session: job.data.session,
+					},
+					"processing inbound reply",
+				);
 				try {
 					await inboundHandler.handle(msg);
-					console.log("[inbound] pipeline completed", {
-						leadId: job.data.leadId,
-					});
+					log.info(
+						{ event: "inbound.completed", durationMs: Date.now() - startedAt },
+						"inbound pipeline completed",
+					);
 				} catch (err) {
 					// Surface the real failure rather than letting pg-boss retry it
 					// silently. Rethrow so the job is marked failed instead of
 					// acknowledged as done.
-					console.error(
-						"[inbound] pipeline FAILED for lead",
-						job.data.leadId,
-						err,
+					log.error(
+						{ event: "inbound.failed", err },
+						"inbound pipeline failed",
 					);
 					throw err;
 				}

@@ -18,6 +18,7 @@
 //     "first available" default is computed lazily at notify time.
 
 import type { HandoffReason, LeadSnapshot } from "@/core/types";
+import { logger } from "@/logger";
 import type { HandoffNotifier } from "@/services/handoff-manager";
 import type { LeadRepository } from "@/services/repositories";
 import type { WahaClient } from "@/services/waha-client";
@@ -135,9 +136,9 @@ export class WahaHandoffNotifier implements HandoffNotifier {
 		}
 		const fromNumberId = await this.resolveFromNumberId();
 		if (!fromNumberId) {
-			console.warn(
-				"[handoff-notifier] no sending number available; skipping consultant alert",
-				leadId,
+			logger.warn(
+				{ event: "handoff.no_number", leadId },
+				"no sending number available; skipping consultant alert",
 			);
 			return;
 		}
@@ -147,11 +148,14 @@ export class WahaHandoffNotifier implements HandoffNotifier {
 			try {
 				const chatId = await this.waha.resolveChatId(recipient);
 				await this.waha.sendText(fromNumberId, chatId, text);
+				logger.info(
+					{ event: "handoff.notified", leadId, reason },
+					"consultant alerted",
+				);
 			} catch (err) {
-				console.error(
-					"[handoff-notifier] failed to alert consultant",
-					recipient,
-					err,
+				logger.error(
+					{ event: "handoff.notify_failed", leadId, err },
+					"failed to alert consultant",
 				);
 			}
 		}
