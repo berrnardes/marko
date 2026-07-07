@@ -10,24 +10,51 @@
  * layout (`--font-hanken`, `--font-fraunces`) rather than resolving them at
  * build time.
  *
- * Palette: primary #163D2C, accent #E2922E, secondary #C2603A, ink #212121,
- * surface #F0EEE9. Main font "Hanken Grotesque" (applied globally); secondary
- * "Fraunces" reserved for display headings.
+ * Palette: primary #004741, accent #C26039, ink (off-black) #212121,
+ * surface (off-white) #F0EEE9. Main font "Hanken Grotesk" (applied globally);
+ * secondary "Fraunces" reserved for subtle display highlights.
  */
 @theme inline {
 	--color-primary: #004741;
-	--color-accent: #e2922e;
-	--color-secondary: #c2603a;
+	--color-accent: #c26039;
+	--color-secondary: #c26039;
 	--color-ink: #212121;
-	--color-surface: #f0ede4;
+	--color-surface: #f0eee9;
 	--color-surface-card: #ffffff;
 
 	--font-sans: var(--font-hanken), ui-sans-serif, system-ui, sans-serif;
 	--font-display: var(--font-fraunces), ui-serif, Georgia, serif;
 }
 
+/* Starfield drift used on the landing hero. The layer translates by exactly
+ * one background-size tile (40px), so the loop restarts seamlessly. */
+@theme {
+	--animate-diagonal-drift: diagonal-drift 6s linear infinite;
+
+	@keyframes diagonal-drift {
+		from {
+			transform: translate3d(0, 0, 0);
+		}
+		to {
+			transform: translate3d(40px, 40px, 0);
+		}
+	}
+}
+
 html {
 	color-scheme: light;
+}
+
+/* Anchor navigation: compensate the fixed landing header and keep the jump
+ * smooth only for users who have not opted out of motion. */
+@media (prefers-reduced-motion: no-preference) {
+	html {
+		scroll-behavior: smooth;
+	}
+}
+
+[id] {
+	scroll-margin-top: 5.5rem;
 }
 
 body {

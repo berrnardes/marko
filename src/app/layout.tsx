@@ -7,7 +7,7 @@
 // sparing use on headings.
 
 import type { Metadata } from "next";
-import { Hanken_Grotesk } from "next/font/google";
+import { Fraunces, Hanken_Grotesk } from "next/font/google";
 import "./globals.css";
 
 const hankenGrotesque = Hanken_Grotesk({
@@ -16,9 +16,17 @@ const hankenGrotesque = Hanken_Grotesk({
 	display: "swap",
 });
 
+const fraunces = Fraunces({
+	variable: "--font-fraunces",
+	subsets: ["latin"],
+	style: ["normal", "italic"],
+	display: "swap",
+});
+
 export const metadata: Metadata = {
-	title: "Marko CRM",
-	description: "WhatsApp lead-reactivation agent and CRM",
+	title: "Marko — Consultoria de aquisição de patrimônio",
+	description:
+		"A Marko monta seu plano para trocar o aluguel por patrimônio usando consórcio — sem juros de banco, sem entrada impossível.",
 };
 
 export default function RootLayout({
@@ -29,7 +37,7 @@ export default function RootLayout({
 	return (
 		<html
 			lang="pt-BR"
-			className={`${hankenGrotesque.variable} h-full antialiased`}
+			className={`${hankenGrotesque.variable} ${fraunces.variable} h-full antialiased`}
 		>
 			<body className="min-h-full flex flex-col font-sans">{children}</body>
 		</html>
