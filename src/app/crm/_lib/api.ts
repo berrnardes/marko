@@ -22,8 +22,7 @@ import type {
 	LeadDetailView,
 	LeadSummaryView,
 	NumberView,
-	TemplatesResponse,
-	TemplateView,
+	SessionStatusView,
 } from "./types";
 
 /** Read JSON from a guarded endpoint, throwing a readable error on failure. */
@@ -44,7 +43,7 @@ export const crmKeys = {
 	lead: (leadId: string) => ["crm", "lead", leadId] as const,
 	handoffs: ["crm", "handoffs"] as const,
 	numbers: ["crm", "numbers"] as const,
-	templates: ["crm", "templates"] as const,
+	session: (sessionName: string) => ["crm", "session", sessionName] as const,
 };
 
 /** Fetch the lead list — lifecycle state + score per lead (Req 20.1). */
@@ -206,6 +205,102 @@ export function useToggleNumberBlock(): UseMutationResult<
 	});
 }
 
+// ---------------------------------------------------------------------------
+// WhatsApp session onboarding (QR connect flow)
+// ---------------------------------------------------------------------------
+
+/** Create + start a fresh WAHA session; returns its generated name. */
+export function useCreateSession(): UseMutationResult<
+	{ sessionName: string; status: string },
+	Error,
+	void
+> {
+	return useMutation({
+		mutationFn: async () => {
+			const response = await fetch("/api/crm/numbers/sessions", {
+				method: "POST",
+				credentials: "same-origin",
+			});
+			if (!response.ok) {
+				const detail = (await response.json().catch(() => null)) as {
+					error?: string;
+				} | null;
+				throw new Error(
+					detail?.error ?? `Failed to start session (${response.status})`,
+				);
+			}
+			return (await response.json()) as { sessionName: string; status: string };
+		},
+	});
+}
+
+/**
+ * Poll a session's status + QR while the connect panel is open. Polls every 2s
+ * until the session is WORKING or FAILED (then stops). Disabled when
+ * `sessionName` is null (no session in progress).
+ */
+export function useSessionStatus(
+	sessionName: string | null,
+): UseQueryResult<SessionStatusView> {
+	return useQuery({
+		queryKey: crmKeys.session(sessionName ?? "none"),
+		enabled: sessionName !== null,
+		refetchInterval: (query) => {
+			const status = query.state.data?.status;
+			return status === "WORKING" || status === "FAILED" ? false : 2000;
+		},
+		queryFn: async () =>
+			getJson<SessionStatusView>(
+				`/api/crm/numbers/sessions/${encodeURIComponent(sessionName ?? "")}`,
+			),
+	});
+}
+
+/**
+ * Confirm a connected session: persists the number (msisdn read server-side
+ * from WAHA) and refreshes the numbers list.
+ */
+export function useConfirmSession(): UseMutationResult<
+	NumberView,
+	Error,
+	string
+> {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: async (sessionName: string) => {
+			const response = await fetch(
+				`/api/crm/numbers/sessions/${encodeURIComponent(sessionName)}/confirm`,
+				{ method: "POST", credentials: "same-origin" },
+			);
+			if (!response.ok) {
+				const detail = (await response.json().catch(() => null)) as {
+					error?: string;
+				} | null;
+				throw new Error(
+					detail?.error ?? `Failed to confirm session (${response.status})`,
+				);
+			}
+			const data = (await response.json()) as { number: NumberView };
+			return data.number;
+		},
+		onSuccess: () => {
+			void queryClient.invalidateQueries({ queryKey: crmKeys.numbers });
+		},
+	});
+}
+
+/** Tear down a pending (unconfirmed) session when the connect panel is closed. */
+export function useCancelSession(): UseMutationResult<void, Error, string> {
+	return useMutation({
+		mutationFn: async (sessionName: string) => {
+			await fetch(
+				`/api/crm/numbers/sessions/${encodeURIComponent(sessionName)}`,
+				{ method: "DELETE", credentials: "same-origin" },
+			);
+		},
+	});
+}
+
 /** Delete a WhatsApp number. */
 export function useDeleteNumber(): UseMutationResult<void, Error, string> {
 	const queryClient = useQueryClient();
@@ -278,7 +373,11 @@ export function useSaveTemplate(): UseMutationResult<
 }
 
 /** Restore a template to its built-in default (deletes the stored row). */
-export function useResetTemplate(): UseMutationResult<TemplateView, Error, string> {
+export function useResetTemplate(): UseMutationResult<
+	TemplateView,
+	Error,
+	string
+> {
 	const queryClient = useQueryClient();
 	return useMutation({
 		mutationFn: async (key: string) => {

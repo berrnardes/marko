@@ -6,21 +6,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { denyIfUnauthenticated } from "@/app/api/crm/_lib/guard";
+import { toNumberView } from "@/app/api/crm/numbers/_view";
 import type { NumberView } from "@/app/crm/_lib/types";
 import { DrizzleNumberRepository } from "@/db/number-repository";
-import type { NumberRecord } from "@/services/repositories";
-
-function toView(record: NumberRecord): NumberView {
-	return {
-		id: record.id,
-		sessionName: record.sessionName,
-		msisdn: record.msisdn,
-		blocked: record.blocked,
-		dailySent: record.dailySent,
-		dailyCounterDate: record.dailyCounterDate.toISOString(),
-		warmupStartDate: record.warmupStartDate.toISOString(),
-	};
-}
 
 export async function GET(): Promise<NextResponse> {
 	const denied = await denyIfUnauthenticated();
@@ -28,7 +16,7 @@ export async function GET(): Promise<NextResponse> {
 
 	const repo = new DrizzleNumberRepository();
 	const records = await repo.listAll();
-	const numbers: NumberView[] = records.map(toView);
+	const numbers: NumberView[] = records.map(toNumberView);
 	return NextResponse.json({ numbers });
 }
 
@@ -53,5 +41,5 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 		sessionName: body.sessionName,
 		msisdn: body.msisdn,
 	});
-	return NextResponse.json({ number: toView(record) }, { status: 201 });
+	return NextResponse.json({ number: toNumberView(record) }, { status: 201 });
 }

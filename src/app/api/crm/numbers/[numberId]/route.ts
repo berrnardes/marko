@@ -6,6 +6,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import { denyIfUnauthenticated } from "@/app/api/crm/_lib/guard";
 import { DrizzleNumberRepository } from "@/db/number-repository";
+import { wahaAdmin } from "@/services/waha-admin-client";
 
 type Params = { params: Promise<{ numberId: string }> };
 
@@ -40,6 +41,14 @@ export async function DELETE(
 
 	const { numberId } = await params;
 	const repo = new DrizzleNumberRepository();
+
+	// Free the underlying WAHA session so a removed number leaves no orphan.
+	// Best-effort: the CRM row is deleted even if WAHA is unreachable.
+	const record = await repo.findById(numberId);
+	if (record) {
+		await wahaAdmin.logoutAndDelete(record.sessionName);
+	}
+
 	await repo.delete(numberId);
 	return NextResponse.json({ ok: true });
 }

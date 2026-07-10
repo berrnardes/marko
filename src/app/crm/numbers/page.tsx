@@ -1,102 +1,162 @@
 // CRM_UI WhatsApp numbers management page.
 //
-// Side-effect boundary: client component. Lists registered WhatsApp numbers
-// with their anti-ban state (blocked, daily count, warm-up start), and provides
-// actions to add a new number, toggle block, and delete.
+// Side-effect boundary: client component. Lists registered WhatsApp numbers with
+// their anti-ban state (blocked, daily count, warm-up start), and connects new
+// numbers end-to-end via a WAHA session: create session → scan QR → auto-register
+// the authenticated line (no manual session-name/number entry).
 
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { PageHeader, StatusNote } from "../_components/ui";
 import {
-	useCreateNumber,
+	useCancelSession,
+	useConfirmSession,
+	useCreateSession,
 	useDeleteNumber,
 	useNumbers,
+	useSessionStatus,
 	useToggleNumberBlock,
 } from "../_lib/api";
 
+/**
+ * Guided connect flow: starts a WAHA session, shows its rotating QR, and on
+ * successful scan auto-registers the number (msisdn read server-side from the
+ * connected line). Calls `onDone` when the number is registered.
+ */
+function ConnectPanel({ onClose }: { onClose: () => void }) {
+	const createSession = useCreateSession();
+	const confirmSession = useConfirmSession();
+	const cancelSession = useCancelSession();
+
+	const [sessionName, setSessionName] = useState<string | null>(null);
+	const [error, setError] = useState<string | null>(null);
+	const startedRef = useRef(false);
+	const confirmedRef = useRef(false);
+
+	const { data: status } = useSessionStatus(sessionName);
+
+	// Start a session exactly once when the panel opens.
+	useEffect(() => {
+		if (startedRef.current) return;
+		startedRef.current = true;
+		createSession.mutate(undefined, {
+			onSuccess: (data) => setSessionName(data.sessionName),
+			onError: (err) => setError(err.message),
+		});
+	}, [createSession]);
+
+	// Once the session is WORKING, confirm (register the number) exactly once.
+	useEffect(() => {
+		if (status?.status !== "WORKING" || !sessionName) return;
+		if (confirmedRef.current) return;
+		confirmedRef.current = true;
+		confirmSession.mutate(sessionName, {
+			onSuccess: () => onClose(),
+			onError: (err) => setError(err.message),
+		});
+	}, [status?.status, sessionName, confirmSession, onClose]);
+
+	function handleCancel() {
+		// Best-effort teardown of the pending, unconfirmed session.
+		if (sessionName && !confirmedRef.current) {
+			cancelSession.mutate(sessionName);
+		}
+		onClose();
+	}
+
+	const phase = error
+		? "error"
+		: !sessionName || status?.status === "STARTING"
+			? "starting"
+			: status?.status === "SCAN_QR_CODE"
+				? "scan"
+				: status?.status === "WORKING"
+					? "confirming"
+					: status?.status === "FAILED"
+						? "failed"
+						: "starting";
+
+	return (
+		<div className="mb-6 rounded-lg border border-primary/20 bg-surface-card p-6 shadow-sm">
+			<div className="mb-4 flex items-center justify-between">
+				<h2 className="text-sm font-semibold text-ink">Conectar novo número</h2>
+				<button
+					type="button"
+					onClick={handleCancel}
+					className="rounded-md border border-ink/20 px-2.5 py-1 text-xs transition-colors hover:bg-ink/5"
+				>
+					Cancelar
+				</button>
+			</div>
+
+			{phase === "starting" ? (
+				<StatusNote>Iniciando sessão WhatsApp…</StatusNote>
+			) : null}
+
+			{phase === "scan" ? (
+				<div className="flex flex-col items-center gap-3">
+					{status?.qr ? (
+						// eslint-disable-next-line @next/next/no-img-element
+						<img
+							src={status.qr}
+							alt="QR code para conectar o WhatsApp"
+							className="h-56 w-56 rounded-md border border-ink/10 bg-white p-2"
+						/>
+					) : (
+						<StatusNote>Gerando QR code…</StatusNote>
+					)}
+					<p className="max-w-xs text-center text-xs text-ink/60">
+						Abra o WhatsApp no celular do número, toque em{" "}
+						<strong>Aparelhos conectados</strong> e aponte a câmera para o QR
+						code. Ele é atualizado automaticamente.
+					</p>
+				</div>
+			) : null}
+
+			{phase === "confirming" ? (
+				<StatusNote>Conectado! Registrando o número…</StatusNote>
+			) : null}
+
+			{phase === "failed" ? (
+				<StatusNote tone="error">
+					A sessão falhou. Feche e tente conectar novamente.
+				</StatusNote>
+			) : null}
+
+			{phase === "error" ? (
+				<StatusNote tone="error">{error}</StatusNote>
+			) : null}
+		</div>
+	);
+}
+
 export default function NumbersPage() {
 	const { data: numbers, isPending, isError, error } = useNumbers();
-	const createNumber = useCreateNumber();
 	const toggleBlock = useToggleNumberBlock();
 	const deleteNumber = useDeleteNumber();
 
-	const [sessionName, setSessionName] = useState("");
-	const [msisdn, setMsisdn] = useState("");
-	const [formError, setFormError] = useState<string | null>(null);
-
-	function handleAdd(e: React.FormEvent) {
-		e.preventDefault();
-		setFormError(null);
-		if (!sessionName.trim() || !msisdn.trim()) {
-			setFormError("Preencha todos os campos.");
-			return;
-		}
-		createNumber.mutate(
-			{ sessionName: sessionName.trim(), msisdn: msisdn.trim() },
-			{
-				onSuccess: () => {
-					setSessionName("");
-					setMsisdn("");
-				},
-				onError: (err) => setFormError(err.message),
-			},
-		);
-	}
+	const [connecting, setConnecting] = useState(false);
 
 	return (
 		<div>
 			<PageHeader
 				title="Números WhatsApp"
-				description="Gerencie os números usados para envio de mensagens. Cada número precisa de uma sessão WAHA ativa."
+				description="Gerencie os números usados para envio de mensagens. Conecte um novo número escaneando o QR code — a sessão e o número são registrados automaticamente."
 			/>
 
-			{/* Add number form */}
-			<form
-				onSubmit={handleAdd}
-				className="mb-6 flex flex-wrap items-end gap-3 rounded-lg border border-ink/10 bg-surface-card p-4 shadow-sm"
-			>
-				<div className="flex flex-col gap-1">
-					<label
-						htmlFor="sessionName"
-						className="text-xs font-medium text-ink/70"
-					>
-						Nome da sessão WAHA
-					</label>
-					<input
-						id="sessionName"
-						type="text"
-						placeholder="default"
-						value={sessionName}
-						onChange={(e) => setSessionName(e.target.value)}
-						className="rounded-md border border-ink/20 bg-surface px-3 py-1.5 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-					/>
-				</div>
-				<div className="flex flex-col gap-1">
-					<label htmlFor="msisdn" className="text-xs font-medium text-ink/70">
-						Número (E.164)
-					</label>
-					<input
-						id="msisdn"
-						type="text"
-						placeholder="+5511999999999"
-						value={msisdn}
-						onChange={(e) => setMsisdn(e.target.value)}
-						className="rounded-md border border-ink/20 bg-surface px-3 py-1.5 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-					/>
-				</div>
+			{connecting ? (
+				<ConnectPanel onClose={() => setConnecting(false)} />
+			) : (
 				<button
-					type="submit"
-					disabled={createNumber.isPending}
-					className="rounded-md bg-primary px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-primary/90 disabled:opacity-50"
+					type="button"
+					onClick={() => setConnecting(true)}
+					className="mb-6 rounded-md bg-primary px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary/90"
 				>
-					{createNumber.isPending ? "Adicionando…" : "Adicionar"}
+					Conectar novo número
 				</button>
-				{formError ? (
-					<span className="text-xs text-secondary">{formError}</span>
-				) : null}
-			</form>
+			)}
 
 			{/* State */}
 			{isPending ? <StatusNote>Carregando números…</StatusNote> : null}
@@ -104,7 +164,7 @@ export default function NumbersPage() {
 
 			{numbers && numbers.length === 0 ? (
 				<StatusNote>
-					Nenhum número cadastrado. Adicione um acima para começar a enviar.
+					Nenhum número cadastrado. Conecte um acima para começar a enviar.
 				</StatusNote>
 			) : null}
 
@@ -160,7 +220,7 @@ export default function NumbersPage() {
 											onClick={() => {
 												if (
 													confirm(
-														`Remover o número ${num.msisdn}? Esta ação não pode ser desfeita.`,
+														`Remover o número ${num.msisdn}? A sessão WhatsApp será desconectada. Esta ação não pode ser desfeita.`,
 													)
 												) {
 													deleteNumber.mutate(num.id);

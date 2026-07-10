@@ -149,3 +149,23 @@ export interface TemplatesResponse {
 	templates: TemplateView[];
 	placeholders: TemplatePlaceholderView[];
 }
+
+/** WAHA session lifecycle states surfaced to the connect flow. */
+export type SessionStatus =
+	| "STARTING"
+	| "SCAN_QR_CODE"
+	| "WORKING"
+	| "FAILED"
+	| "STOPPED";
+
+/** Poll response driving the "connect a new number" QR flow. */
+export interface SessionStatusView {
+	status: SessionStatus;
+	/** `data:` URL of the scan QR, present while awaiting a scan. */
+	qr?: string;
+	/** The authenticated line, present once the session is WORKING. */
+	me?: {
+		msisdn: string;
+		pushName?: string;
+	};
+}
