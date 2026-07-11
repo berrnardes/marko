@@ -11,10 +11,10 @@
 // This uses the Next.js 16 `proxy` file convention (the successor to the
 // deprecated `middleware` convention); the guarded function is named `proxy`.
 //
-// Public routes are excluded via the matcher below: the Better Auth endpoints
-// (`/api/auth/*`), the login page, Next internals/static assets, and the
-// WAHA inbound webhook (which is unauthenticated by design and protected by
-// HMAC instead).
+// The matcher below lists the PROTECTED surfaces (the CRM pages and the
+// internal CRM API); everything else — landing page, blog, login/signup, the
+// Better Auth endpoints, the WAHA inbound webhook (unauthenticated by design
+// and protected by HMAC instead), static assets — is public by default.
 
 import { getSessionCookie } from "better-auth/cookies";
 import { type NextRequest, NextResponse } from "next/server";
@@ -47,12 +47,10 @@ export function proxy(request: NextRequest): NextResponse {
 }
 
 /**
- * Guard the CRM surface while leaving public routes open. Excludes the Better
- * Auth endpoints, the login and signup pages, the public WAHA webhook, and
- * Next internal and static assets; everything else under the app is protected.
+ * Guard only the CRM surface: its pages and its internal data endpoints. New
+ * public routes (landing, blog, …) need no matcher change — routes are public
+ * unless listed here.
  */
 export const config = {
-	matcher: [
-		"/((?!login|signup|api/auth|api/waha/webhook|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
-	],
+	matcher: ["/crm/:path*", "/api/crm/:path*"],
 };
