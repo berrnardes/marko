@@ -14,10 +14,12 @@ services:
   waha:
     image: devlikeapro/waha:latest
     restart: unless-stopped
-    ports:
-      # Exponha a 3000 só se precisar acessar o dashboard/API do WAHA de fora.
-      # Em produção, prefira deixar atrás de um proxy reverso com TLS.
-      - "3000:3000"
+    # NÃO publica a 3000 na internet: o acesso externo (app da Vercel) entra
+    # pelo Caddy via HTTPS (https://waha.markohome.com.br). O worker continua
+    # falando com o WAHA pelo hostname interno `waha:3000` da rede Docker.
+    # `expose` deixa a porta visível só entre containers, sem mapear no host.
+    expose:
+      - "3000"
     # Carrega as credenciais persistentes do dashboard/swagger (e demais
     # WAHA_*) do arquivo de produção. Sem isso, o WAHA gera senhas aleatórias
     # de dashboard/swagger a cada restart (ver logs) e o /dashboard responde
@@ -74,8 +76,39 @@ services:
     networks:
       - marko
 
+  # Proxy reverso com TLS automático (Let's Encrypt) na frente do WAHA. Publica
+  # https://waha.markohome.com.br e encaminha para `waha:3000` na rede interna.
+  # É o ÚNICO container com portas abertas na internet (80/443). O 80 é exigido
+  # pelo desafio ACME; o 443 serve o tráfego. Requer:
+  #   - registro DNS A: waha.markohome.com.br -> IP público do Hetzner
+  #   - firewall do Hetzner liberando 80 e 443
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    # Rotaciona os logs para o disco do Hetzner não encher.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    depends_on:
+      - waha
+    networks:
+      - marko
+
 volumes:
   waha-sessions:
+  # Persiste os certificados TLS do Caddy entre restarts (evita re-emitir e
+  # bater no rate limit do Let's Encrypt).
+  caddy-data:
+  caddy-config:
 
 networks:
   marko:

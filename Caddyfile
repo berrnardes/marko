@@ -1,0 +1,20 @@
+# Caddy — proxy reverso com TLS automático na frente do WAHA (Hetzner).
+#
+# Publica o WAHA em HTTPS para que o app na Vercel possa criar sessões e ler o
+# QR code (rota /api/crm/numbers/sessions). O Caddy obtém e renova o certificado
+# Let's Encrypt sozinho; o WAHA em si não fica exposto (só `expose: 3000` na
+# rede Docker interna).
+#
+# Pré-requisitos:
+#   - DNS A: waha.markohome.com.br -> IP público do servidor Hetzner
+#   - Portas 80 e 443 abertas no firewall do Hetzner
+#
+# A API do WAHA continua protegida pela WAHA_API_KEY (o app envia X-Api-Key).
+# Se quiser um e-mail para os avisos do Let's Encrypt, descomente o bloco global:
+# {
+#     email contato.marko@outlook.com
+# }
+
+waha.markohome.com.br {
+	reverse_proxy waha:3000
+}
