@@ -23,6 +23,8 @@ import type {
 	LeadSummaryView,
 	NumberView,
 	SessionStatusView,
+	TemplatesResponse,
+	TemplateView,
 } from "./types";
 
 /** Read JSON from a guarded endpoint, throwing a readable error on failure. */
@@ -43,6 +45,7 @@ export const crmKeys = {
 	lead: (leadId: string) => ["crm", "lead", leadId] as const,
 	handoffs: ["crm", "handoffs"] as const,
 	numbers: ["crm", "numbers"] as const,
+	templates: ["crm", "templates"] as const,
 	session: (sessionName: string) => ["crm", "session", sessionName] as const,
 };
 
