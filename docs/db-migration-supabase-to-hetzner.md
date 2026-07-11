@@ -117,8 +117,11 @@ Por que dois caminhos (igual ao split que existia no Supabase):
    postgres://marko:SENHA@db.markohome.com.br:5432/marko?sslmode=no-verify
    ```
 
-   e fazer redeploy. Verificar: login no CRM (Better Auth), lista de leads,
-   import de um CSV pequeno (testa enqueue via pg-boss pelo pooler).
+   e fazer redeploy. (Fuso horário: NÃO é preciso configurar `TZ` na Vercel —
+   ela é uma env reservada e o app já pina `America/Sao_Paulo` em código no
+   boot, via `src/instrumentation.ts`.) Verificar: login no CRM (Better Auth),
+   lista de leads, import de um CSV pequeno (testa enqueue via pg-boss pelo
+   pooler).
 
 3. **Backup**: rodar um backup manual e conferir o dump:
 
