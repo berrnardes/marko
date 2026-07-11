@@ -4,6 +4,7 @@ node_modules
 .git
 .env
 .env.*
+certs
 *.log
 coverage
 .vscode

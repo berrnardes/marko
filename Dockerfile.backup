@@ -1,0 +1,21 @@
+# Imagem do serviço de backup noturno do banco (docker-compose: db-backup).
+#
+# Contém apenas o pg_dump (client do Postgres 17, mesmo major do container
+# postgres) e o rclone para a cópia offsite opcional. O loop de agendamento
+# vive em scripts/db-backup.sh — sem cron, um sleep até as 03:00 é suficiente
+# e mantém o container com um único processo.
+
+FROM alpine:3.21
+
+# coreutils: o agendador usa `date -d "tomorrow 03:00"` (GNU date; o date do
+# busybox não entende esses formatos relativos).
+RUN apk add --no-cache bash coreutils postgresql17-client rclone tzdata
+
+COPY scripts/db-backup.sh /usr/local/bin/db-backup.sh
+RUN chmod +x /usr/local/bin/db-backup.sh
+
+# America/Sao_Paulo para o "03:00" do agendador ser horário local do negócio.
+ENV TZ=America/Sao_Paulo
+
+ENTRYPOINT ["/usr/local/bin/db-backup.sh"]
+CMD ["loop"]

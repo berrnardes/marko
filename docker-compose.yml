@@ -1,8 +1,15 @@
-# Stack always-on do Hetzner: WAHA (gateway WhatsApp) + worker (fila pg-boss).
+# Stack always-on do Hetzner: Postgres + PgBouncer + WAHA + worker + Caddy.
 #
-# O app Next.js NÃO está aqui — ele é hospedado na Vercel. Esta máquina roda os
-# dois processos que a Vercel não consegue manter de pé: o WAHA (serviço
-# contínuo) e o worker (consumidor contínuo da fila no Postgres do Supabase).
+# O app Next.js NÃO está aqui — ele é hospedado na Vercel. Esta máquina roda o
+# que a Vercel não consegue manter de pé: o banco (Postgres), o pooler público
+# para o app serverless (PgBouncer), o WAHA (gateway WhatsApp contínuo), o
+# worker (consumidor contínuo da fila pg-boss) e o backup noturno do banco.
+#
+# Topologia do banco (espelha o split que existia no Supabase):
+#   app Vercel ──TLS──▶ pgbouncer:5432 (público, transaction mode) ─▶ postgres
+#   worker     ────────▶ postgres:5432 (rede Docker, direto — o pg-boss precisa
+#                        de afinidade de sessão e NÃO pode passar pelo pooler
+#                        de transação)
 #
 # Os dois serviços ficam na mesma rede Docker, então o worker fala com o WAHA
 # pelo hostname interno `waha` (http://waha:3000) — sem expor essa porta à
@@ -11,6 +18,99 @@
 # Suba com:  docker compose --env-file .env.production up -d --build
 
 services:
+  # Banco de dados da aplicação (leads, mensagens, Better Auth, fila pg-boss).
+  # NÃO publica porta no host: o acesso externo entra só pelo PgBouncer; o
+  # worker e o backup falam com ele pela rede Docker interna.
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=marko
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=marko
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U marko -d marko"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    networks:
+      - marko
+
+  # Entrada PÚBLICA do banco para o app serverless na Vercel: pooling em modo
+  # transação (uma função serverless não pode segurar conexões) + TLS com
+  # certificado autoassinado (por isso o app usa `?sslmode=no-verify`).
+  # Gere o certificado antes do primeiro `up` (ver docs/db-migration-*.md):
+  #   openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+  #     -keyout certs/db.key -out certs/db.crt -subj "/CN=db.markohome.com.br"
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=marko
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - DB_NAME=marko
+      - LISTEN_PORT=5432
+      - POOL_MODE=transaction
+      - AUTH_TYPE=scram-sha-256
+      - MAX_CLIENT_CONN=200
+      - DEFAULT_POOL_SIZE=20
+      - CLIENT_TLS_SSLMODE=require
+      - CLIENT_TLS_KEY_FILE=/certs/db.key
+      - CLIENT_TLS_CERT_FILE=/certs/db.crt
+    volumes:
+      - ./certs:/certs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    networks:
+      - marko
+
+  # Backup noturno: pg_dump para o volume local (retenção de N dias) e, se
+  # RCLONE_REMOTE estiver configurado no .env.production, cópia offsite
+  # (Hetzner Storage Box via SFTP ou qualquer S3-compatível via RCLONE_CONFIG_*).
+  db-backup:
+    build:
+      context: .
+      dockerfile: Dockerfile.backup
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      - PGHOST=postgres
+      - PGPORT=5432
+      - PGUSER=marko
+      - PGPASSWORD=${POSTGRES_PASSWORD}
+      - PGDATABASE=marko
+      - BACKUP_KEEP_DAYS=14
+    volumes:
+      - pg-backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    networks:
+      - marko
+
   waha:
     image: devlikeapro/waha:latest
     restart: unless-stopped
@@ -60,12 +160,18 @@ services:
       # Sobrescreve o endereço do WAHA para o hostname interno da rede Docker,
       # independentemente do que estiver no .env.production.
       - WAHA_BASE_URL=http://waha:3000
+      # Banco LOCAL (container postgres), direto e sem pooler: o pg-boss exige
+      # afinidade de sessão. Sobrescreve qualquer DATABASE_URL do .env.production.
+      - DATABASE_URL=postgres://marko:${POSTGRES_PASSWORD}@postgres:5432/marko
       # Identifica este processo nos logs estruturados (campo `svc`) e força o
       # logger a emitir JSON puro (sem pino-pretty) para agregação.
       - SVC=worker
       - NODE_ENV=production
     depends_on:
-      - waha
+      waha:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     # Rotaciona os logs JSON do worker para o disco do Hetzner não encher: no
     # máximo 5 arquivos de 10 MB por serviço.
     logging:
@@ -104,6 +210,11 @@ services:
       - marko
 
 volumes:
+  # Dados do Postgres — o banco inteiro vive aqui. NUNCA rode `docker compose
+  # down -v` em produção.
+  pg-data:
+  # Dumps noturnos do banco (retenção local; offsite via rclone).
+  pg-backups:
   waha-sessions:
   # Persiste os certificados TLS do Caddy entre restarts (evita re-emitir e
   # bater no rate limit do Let's Encrypt).

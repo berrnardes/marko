@@ -34,6 +34,9 @@ yarn-error.log*
 .env*
 !.env*.example
 
+# TLS do PgBouncer (chave privada gerada no servidor; nunca comitar)
+/certs/
+
 # vercel
 .vercel
 
