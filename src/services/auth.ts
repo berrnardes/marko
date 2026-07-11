@@ -17,9 +17,11 @@
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { nextCookies } from "better-auth/next-js";
+import { organization } from "better-auth/plugins";
+import { eq } from "drizzle-orm";
 import { headers as nextHeaders } from "next/headers";
 
-import { authSchema } from "@/db/auth-schema";
+import { authSchema, member } from "@/db/auth-schema";
 import { db } from "@/db/client";
 
 /**
@@ -30,12 +32,11 @@ import { db } from "@/db/client";
  * The secret and base URL are read from the environment by name (never
  * hard-coded): `BETTER_AUTH_SECRET` and `BETTER_AUTH_URL`.
  *
- * Public self-service registration is disabled (`disableSignUp: true`): the
- * beta runs with a controlled set of accounts, so the `/api/auth/sign-up/email`
- * route rejects requests. Accounts are provisioned out-of-band by the
- * `scripts/seed-admin.ts` bootstrap script, which creates users through Better
- * Auth's server-side context (bypassing this route guard) rather than the
- * public endpoint. Sign-in remains open.
+ * Multi-tenancy: the `organization` plugin models each customer as an
+ * organization (tenant). Public self-service registration is open — the
+ * `/signup` page creates the user and their organization in one flow — and
+ * the session-creation hook stamps `activeOrganizationId` from the user's
+ * first membership so every login lands scoped to their tenant.
  */
 export const auth = betterAuth({
 	database: drizzleAdapter(db, {
@@ -46,9 +47,27 @@ export const auth = betterAuth({
 	baseURL: process.env.BETTER_AUTH_URL,
 	emailAndPassword: {
 		enabled: true,
-		disableSignUp: true,
 	},
-	plugins: [nextCookies()],
+	databaseHooks: {
+		session: {
+			create: {
+				before: async (session) => {
+					const [membership] = await db
+						.select({ organizationId: member.organizationId })
+						.from(member)
+						.where(eq(member.userId, session.userId))
+						.limit(1);
+					return {
+						data: {
+							...session,
+							activeOrganizationId: membership?.organizationId ?? null,
+						},
+					};
+				},
+			},
+		},
+	},
+	plugins: [organization(), nextCookies()],
 });
 
 /** A validated session as returned by Better Auth, or `null` when none/expired. */

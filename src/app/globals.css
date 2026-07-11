@@ -10,14 +10,11 @@
  * layout (`--font-hanken`, `--font-fraunces`) rather than resolving them at
  * build time.
  *
- * Palette: primary #004741, accent #C26039, ink (off-black) #212121,
- * surface (off-white) #F0EEE9. Main font "Hanken Grotesk" (applied globally);
- * secondary "Fraunces" reserved for subtle display highlights.
  */
 @theme inline {
-	--color-primary: #004741;
-	--color-accent: #c26039;
-	--color-secondary: #c26039;
+	--color-primary: #212121;
+	--color-accent: #004741;
+	--color-secondary: #004741;
 	--color-ink: #212121;
 	--color-surface: #f0eee9;
 	--color-surface-card: #ffffff;

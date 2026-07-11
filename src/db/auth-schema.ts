@@ -1,7 +1,8 @@
 // Better Auth Drizzle schema (PostgreSQL, default schema).
 //
-// Better Auth owns these tables (`user`, `session`, `account`, `verification`)
-// and is the only writer of them; the application's domain tables live in
+// Better Auth owns these tables (`user`, `session`, `account`, `verification`,
+// and the organization plugin's `organization`, `member`, `invitation`) and is
+// the only writer of them; the application's domain tables live in
 // `./schema.ts`. They are kept in this separate file — rather than mixed into
 // the application schema — to preserve that ownership boundary (Req 21): the
 // application's repositories never touch these rows, and Better Auth manages
@@ -42,6 +43,7 @@ export const session = pgTable("session", {
 	userId: text("user_id")
 		.notNull()
 		.references(() => user.id, { onDelete: "cascade" }),
+	activeOrganizationId: text("active_organization_id"),
 });
 
 /** Credential / OAuth account linkage owned by Better Auth. */
@@ -73,5 +75,55 @@ export const verification = pgTable("verification", {
 	updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
+/**
+ * A tenant (Better Auth organization plugin). Every signup creates one
+ * organization — the customer's workspace — and all domain data is scoped to
+ * it as the multi-tenant seams land.
+ */
+export const organization = pgTable("organization", {
+	id: text("id").primaryKey(),
+	name: text("name").notNull(),
+	slug: text("slug").notNull().unique(),
+	logo: text("logo"),
+	createdAt: timestamp("created_at").notNull().defaultNow(),
+	metadata: text("metadata"),
+});
+
+/** A user's membership (and role) in an organization. */
+export const member = pgTable("member", {
+	id: text("id").primaryKey(),
+	organizationId: text("organization_id")
+		.notNull()
+		.references(() => organization.id, { onDelete: "cascade" }),
+	userId: text("user_id")
+		.notNull()
+		.references(() => user.id, { onDelete: "cascade" }),
+	role: text("role").notNull().default("member"),
+	createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+/** A pending invite for a user to join an organization. */
+export const invitation = pgTable("invitation", {
+	id: text("id").primaryKey(),
+	organizationId: text("organization_id")
+		.notNull()
+		.references(() => organization.id, { onDelete: "cascade" }),
+	email: text("email").notNull(),
+	role: text("role"),
+	status: text("status").notNull().default("pending"),
+	expiresAt: timestamp("expires_at").notNull(),
+	inviterId: text("inviter_id")
+		.notNull()
+		.references(() => user.id, { onDelete: "cascade" }),
+});
+
 /** The Better Auth table set, keyed by model name for the Drizzle adapter. */
-export const authSchema = { user, session, account, verification } as const;
+export const authSchema = {
+	user,
+	session,
+	account,
+	verification,
+	organization,
+	member,
+	invitation,
+} as const;

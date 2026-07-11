@@ -5,6 +5,7 @@
 // CRM rather than shown the form. The interactive form is a client component;
 // it is wrapped in Suspense because it reads the `next` search param.
 
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Suspense } from "react";
 
@@ -24,6 +25,12 @@ export default async function LoginPage() {
 			<Suspense fallback={null}>
 				<LoginForm />
 			</Suspense>
+			<p className="text-sm">
+				Não tem uma conta?{" "}
+				<Link href="/signup" className="text-primary underline">
+					Criar conta
+				</Link>
+			</p>
 		</main>
 	);
 }

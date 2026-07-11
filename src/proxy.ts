@@ -48,11 +48,11 @@ export function proxy(request: NextRequest): NextResponse {
 
 /**
  * Guard the CRM surface while leaving public routes open. Excludes the Better
- * Auth endpoints, the login page, the public WAHA webhook, and Next internal
- * and static assets; everything else under the app is protected.
+ * Auth endpoints, the login and signup pages, the public WAHA webhook, and
+ * Next internal and static assets; everything else under the app is protected.
  */
 export const config = {
 	matcher: [
-		"/((?!login|api/auth|api/waha/webhook|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
+		"/((?!login|signup|api/auth|api/waha/webhook|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
 	],
 };
