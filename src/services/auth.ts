@@ -48,7 +48,39 @@ export const auth = betterAuth({
 	emailAndPassword: {
 		enabled: true,
 	},
+	user: {
+		additionalFields: {
+			// Consultant WhatsApp for handoff alerts (E.164). Settable by the
+			// user; verification is stamped server-side only, so a client can
+			// never mark its own number verified.
+			phoneE164: {
+				type: "string",
+				required: false,
+				input: true,
+			},
+			phoneVerifiedAt: {
+				type: "date",
+				required: false,
+				input: false,
+			},
+		},
+	},
 	databaseHooks: {
+		user: {
+			update: {
+				before: async (data) => {
+					// A phone changed through any Better Auth path must re-verify:
+					// drop the stamp whenever `phoneE164` is written without an
+					// accompanying (server-set) `phoneVerifiedAt`. The settings flow
+					// writes through `DrizzleConsultantRepository.setPhone`, which
+					// resets it itself; this guards the generic update-user path.
+					if ("phoneE164" in data && !("phoneVerifiedAt" in data)) {
+						return { data: { ...data, phoneVerifiedAt: null } };
+					}
+					return { data };
+				},
+			},
+		},
 		session: {
 			create: {
 				before: async (session) => {
@@ -67,7 +99,25 @@ export const auth = betterAuth({
 			},
 		},
 	},
-	plugins: [organization(), nextCookies()],
+	plugins: [
+		organization({
+			schema: {
+				member: {
+					additionalFields: {
+						// Per-membership opt-in to handoff alerts (default on), so
+						// the same consultant can mute one org without another.
+						receivesHandoffAlerts: {
+							type: "boolean",
+							required: false,
+							defaultValue: true,
+							input: false,
+						},
+					},
+				},
+			},
+		}),
+		nextCookies(),
+	],
 });
 
 /** A validated session as returned by Better Auth, or `null` when none/expired. */

@@ -150,6 +150,26 @@ export interface TemplatesResponse {
 	placeholders: TemplatePlaceholderView[];
 }
 
+// ---------------------------------------------------------------------------
+// Notification settings (handoff alerts)
+// ---------------------------------------------------------------------------
+
+/** The caller's handoff-alert settings as viewed on the settings page. */
+export interface NotificationSettingsView {
+	/** The member's WhatsApp number (E.164), when one has been entered. */
+	phoneE164: string | null;
+	/** Whether the phone was confirmed via the WhatsApp code. */
+	phoneVerified: boolean;
+	/** The per-membership handoff-alert opt-in flag. */
+	receivesHandoffAlerts: boolean;
+	/** The awaiting code entry, when a sent code has not expired yet. */
+	pendingVerification: {
+		phoneE164: string;
+		/** ISO-8601 instant the code expires. */
+		expiresAt: string;
+	} | null;
+}
+
 /** WAHA session lifecycle states surfaced to the connect flow. */
 export type SessionStatus =
 	| "STARTING"

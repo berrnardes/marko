@@ -456,3 +456,32 @@ export const messageTemplates = pgTable(
 		),
 	],
 );
+
+// ---------------------------------------------------------------------------
+// phone_verifications
+// ---------------------------------------------------------------------------
+
+/**
+ * Pending consultant phone verification: the hashed 6-digit code sent by
+ * WhatsApp to the phone being claimed, with its expiry and a wrong-guess
+ * counter. One row per user (`user_id` is the primary key, so starting a new
+ * verification replaces any pending one). On a successful confirm the row is
+ * deleted and `user.phone_verified_at` is stamped — only a verified phone ever
+ * receives handoff alerts.
+ *
+ * `user_id` references Better Auth's `user` table by convention (no FK — like
+ * `leads.assigned_consultant_id`, domain tables do not declare constraints
+ * into the auth schema).
+ */
+export const phoneVerifications = pgTable("phone_verifications", {
+	userId: text("user_id").primaryKey(),
+	/** The E.164 phone this code was sent to; must still match at confirm time. */
+	phoneE164: text("phone_e164").notNull(),
+	/** SHA-256 hex of the 6-digit code (never stored in the clear). */
+	codeHash: text("code_hash").notNull(),
+	attempts: integer("attempts").notNull().default(0),
+	expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true })
+		.notNull()
+		.defaultNow(),
+});

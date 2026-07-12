@@ -21,6 +21,7 @@ import type {
 	ImportReportView,
 	LeadDetailView,
 	LeadSummaryView,
+	NotificationSettingsView,
 	NumberView,
 	SessionStatusView,
 	TemplatesResponse,
@@ -47,7 +48,29 @@ export const crmKeys = {
 	numbers: ["crm", "numbers"] as const,
 	templates: ["crm", "templates"] as const,
 	session: (sessionName: string) => ["crm", "session", sessionName] as const,
+	settings: ["crm", "settings"] as const,
 };
+
+/** POST/PATCH JSON to a guarded endpoint, surfacing the API's `error` detail. */
+async function sendJson<T>(
+	url: string,
+	method: "POST" | "PATCH",
+	payload?: unknown,
+): Promise<T> {
+	const response = await fetch(url, {
+		method,
+		headers: payload === undefined ? {} : { "Content-Type": "application/json" },
+		body: payload === undefined ? undefined : JSON.stringify(payload),
+		credentials: "same-origin",
+	});
+	if (!response.ok) {
+		const detail = (await response.json().catch(() => null)) as {
+			error?: string;
+		} | null;
+		throw new Error(detail?.error ?? `Request failed (${response.status})`);
+	}
+	return (await response.json()) as T;
+}
 
 /** Fetch the lead list — lifecycle state + score per lead (Req 20.1). */
 export function useLeads(): UseQueryResult<LeadSummaryView[]> {
@@ -328,6 +351,93 @@ export function useDeleteNumber(): UseMutationResult<void, Error, string> {
 		onSuccess: () => {
 			void queryClient.invalidateQueries({ queryKey: crmKeys.numbers });
 		},
+	});
+}
+
+// ---------------------------------------------------------------------------
+// Notification settings (handoff alerts)
+// ---------------------------------------------------------------------------
+
+/** Fetch the signed-in member's handoff-alert settings. */
+export function useNotificationSettings(): UseQueryResult<NotificationSettingsView> {
+	return useQuery({
+		queryKey: crmKeys.settings,
+		queryFn: async () => {
+			const data = await getJson<{ settings: NotificationSettingsView }>(
+				"/api/crm/settings/notifications",
+			);
+			return data.settings;
+		},
+	});
+}
+
+/** Save the alert phone and send its WhatsApp verification code (also resend). */
+export function useSetAlertPhone(): UseMutationResult<
+	{ phoneE164: string; expiresAt: string },
+	Error,
+	string
+> {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: (phone: string) =>
+			sendJson<{ phoneE164: string; expiresAt: string }>(
+				"/api/crm/settings/phone",
+				"POST",
+				{ phone },
+			),
+		onSuccess: () => {
+			void queryClient.invalidateQueries({ queryKey: crmKeys.settings });
+		},
+	});
+}
+
+/** Confirm the alert phone with the received 6-digit code. */
+export function useVerifyAlertPhone(): UseMutationResult<
+	{ ok: true; phoneE164: string },
+	Error,
+	string
+> {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: (code: string) =>
+			sendJson<{ ok: true; phoneE164: string }>(
+				"/api/crm/settings/phone/verify",
+				"POST",
+				{ code },
+			),
+		onSuccess: () => {
+			void queryClient.invalidateQueries({ queryKey: crmKeys.settings });
+		},
+	});
+}
+
+/** Toggle the per-membership handoff-alert opt-in flag. */
+export function useToggleHandoffAlerts(): UseMutationResult<
+	{ ok: true },
+	Error,
+	boolean
+> {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: (receivesHandoffAlerts: boolean) =>
+			sendJson<{ ok: true }>("/api/crm/settings/notifications", "PATCH", {
+				receivesHandoffAlerts,
+			}),
+		onSuccess: () => {
+			void queryClient.invalidateQueries({ queryKey: crmKeys.settings });
+		},
+	});
+}
+
+/** Send a sample handoff alert to the caller's verified phone. */
+export function useSendTestAlert(): UseMutationResult<
+	{ ok: true },
+	Error,
+	void
+> {
+	return useMutation({
+		mutationFn: () =>
+			sendJson<{ ok: true }>("/api/crm/settings/test-alert", "POST"),
 	});
 }
 

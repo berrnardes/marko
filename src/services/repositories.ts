@@ -286,6 +286,102 @@ export interface HandoffRepository {
 }
 
 // ---------------------------------------------------------------------------
+// ConsultantRepository
+// ---------------------------------------------------------------------------
+
+/** A member's handoff-alert settings as shown on the CRM settings page. */
+export interface ConsultantNotificationSettings {
+	/** The user's WhatsApp number (E.164), when one has been entered. */
+	phoneE164: string | null;
+	/** When the phone was confirmed via the WhatsApp code; null = unverified. */
+	phoneVerifiedAt: Date | null;
+	/** The per-membership handoff-alert opt-in flag. */
+	receivesHandoffAlerts: boolean;
+}
+
+/**
+ * Boundary over the auth membership tables for consultant handoff alerts. A
+ * recipient is a member with alerts enabled whose user has a *verified*
+ * WhatsApp number — an unverified phone is never alerted, so a typo can't
+ * route lead alerts to a stranger. Writes touch only the domain-owned columns
+ * the application added to those tables (`user.phone_e164`,
+ * `user.phone_verified_at`, `member.receives_handoff_alerts`); everything
+ * Better Auth manages stays Better Auth's. Until `tenant_id` lands on the
+ * domain tables the recipient list is org-agnostic; it then becomes scoped to
+ * the lead's org.
+ */
+export interface ConsultantRepository {
+	/** Distinct verified E.164 numbers of members opted into handoff alerts. */
+	listHandoffAlertRecipients(): Promise<string[]>;
+	/**
+	 * Read one member's alert settings, or `null` when the user has no
+	 * membership in the organization.
+	 */
+	getNotificationSettings(
+		userId: string,
+		organizationId: string,
+	): Promise<ConsultantNotificationSettings | null>;
+	/**
+	 * Set the user's phone and reset its verification stamp in the same write,
+	 * so a changed number always re-verifies before receiving alerts.
+	 */
+	setPhone(userId: string, phoneE164: string): Promise<void>;
+	/**
+	 * Stamp the phone as verified at `at`, only when the user's current phone
+	 * still equals `phoneE164` (the number the code was sent to). Returns
+	 * whether the stamp was applied.
+	 */
+	stampPhoneVerified(
+		userId: string,
+		phoneE164: string,
+		at: Date,
+	): Promise<boolean>;
+	/** Set the membership's handoff-alert opt-in flag. */
+	setAlertOptIn(
+		userId: string,
+		organizationId: string,
+		enabled: boolean,
+	): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// PhoneVerificationRepository
+// ---------------------------------------------------------------------------
+
+/** A pending phone verification (the hashed code sent by WhatsApp). */
+export interface PhoneVerificationRecord {
+	userId: string;
+	/** The E.164 phone the code was sent to. */
+	phoneE164: string;
+	/** SHA-256 hex of the 6-digit code. */
+	codeHash: string;
+	/** Wrong guesses so far; the verification dies at the attempt cap. */
+	attempts: number;
+	expiresAt: Date;
+	createdAt: Date;
+}
+
+/**
+ * Persistence boundary for pending phone verifications. At most one pending
+ * verification exists per user — starting a new one replaces it.
+ */
+export interface PhoneVerificationRepository {
+	/** Create or replace the user's pending verification. */
+	upsert(input: {
+		userId: string;
+		phoneE164: string;
+		codeHash: string;
+		expiresAt: Date;
+	}): Promise<void>;
+	/** Read the user's pending verification, when any. */
+	findByUser(userId: string): Promise<PhoneVerificationRecord | null>;
+	/** Count one wrong guess; returns the new attempt total. */
+	incrementAttempts(userId: string): Promise<number>;
+	/** Drop the pending verification (on success, expiry, or attempt cap). */
+	delete(userId: string): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
 // MessageTemplateRepository
 // ---------------------------------------------------------------------------
 

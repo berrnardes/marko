@@ -5,8 +5,10 @@
 // the only writer of them; the application's domain tables live in
 // `./schema.ts`. They are kept in this separate file — rather than mixed into
 // the application schema — to preserve that ownership boundary (Req 21): the
-// application's repositories never touch these rows, and Better Auth manages
-// their lifecycle through its own adapter/CLI.
+// application never WRITES these rows (Better Auth manages their lifecycle
+// through its own adapter/CLI); the one application reader is the read-only
+// `DrizzleConsultantRepository`, which resolves handoff-alert recipients from
+// `member` ⋈ `user`.
 //
 // The column shapes mirror Better Auth's core schema exactly so the Drizzle
 // adapter (see `@/services/auth`) can map each model onto the matching table.
@@ -23,6 +25,8 @@ export const user = pgTable("user", {
 	email: text("email").notNull().unique(),
 	emailVerified: boolean("email_verified").notNull().default(false),
 	image: text("image"),
+	phoneE164: text("phone_e164"),
+	phoneVerifiedAt: timestamp("phone_verified_at"),
 	createdAt: timestamp("created_at").notNull().defaultNow(),
 	updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -99,6 +103,9 @@ export const member = pgTable("member", {
 		.notNull()
 		.references(() => user.id, { onDelete: "cascade" }),
 	role: text("role").notNull().default("member"),
+	receivesHandoffAlerts: boolean("receives_handoff_alerts")
+		.notNull()
+		.default(true),
 	createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

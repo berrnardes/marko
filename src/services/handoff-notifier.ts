@@ -1,7 +1,7 @@
 // Consultant handoff notifier (I/O boundary — alert a human on handoff).
 //
 // Implements {@link HandoffNotifier} by sending a WhatsApp message carrying the
-// handed-off Lead's context to the configured consultant number(s), so a
+// handed-off Lead's context to the resolved consultant number(s), so a
 // consultant is alerted on their own phone the moment a Lead replies to the
 // cadence and is handed off (beta flow). The consultant then continues the
 // conversation on the same WAHA number from a WhatsApp Web linked device.
@@ -11,11 +11,11 @@
 // path — the {@link HandoffManager} invokes it best-effort — but it also guards
 // each recipient send so one failing number does not stop the others.
 //
-// Configuration (managed by env in the beta, see `runtime.ts`):
-//   - the consultant recipient numbers (`CONSULTANT_NOTIFY_NUMBERS`), and
-//   - the WhatsApp number the alert is sent *from* (`CONSULTANT_NOTIFY_FROM_NUMBER`,
-//     defaulting to the first available number) — supplied as a resolver so the
-//     "first available" default is computed lazily at notify time.
+// Both the recipients and the WhatsApp number the alert is sent *from* are
+// supplied as resolvers computed lazily at notify time, so they always reflect
+// current state: recipients come from org membership (members with a verified
+// phone and alerts on, with a deprecated env fallback — see `runtime.ts`), and
+// the sending number defaults to the first available registered number.
 
 import type { HandoffReason, LeadSnapshot } from "@/core/types";
 import { logger } from "@/logger";
@@ -29,8 +29,14 @@ export interface WahaHandoffNotifierConfig {
 	waha: Pick<WahaClient, "resolveChatId" | "sendText">;
 	/** Read the handed-off Lead's context for the alert body. */
 	leads: Pick<LeadRepository, "findById">;
-	/** The consultant recipient numbers (E.164) to alert. */
-	consultantNumbers: readonly string[];
+	/**
+	 * Resolve the consultant recipient numbers (E.164) to alert, computed lazily
+	 * at notify time so membership changes apply without rebuilding the runtime.
+	 * Takes the handed-off `leadId` so recipients can be scoped to the lead's
+	 * organization once the domain tables are tenant-scoped. An empty result
+	 * skips the alert (logged, never thrown).
+	 */
+	resolveRecipients: (leadId: string) => Promise<readonly string[]>;
 	/**
 	 * Resolve the domain `numberId` the alert is sent *from*, computed lazily so
 	 * the "first available number" default reflects current state. Returns
@@ -104,34 +110,40 @@ export function buildHandoffNotificationText(
 }
 
 /**
- * Concrete {@link HandoffNotifier} over the WAHA client. Reads the Lead, builds
- * the alert body, and sends it to each configured consultant number from the
- * resolved sending number. Best-effort throughout: a missing Lead, no available
- * sending number, or a per-recipient failure is logged and skipped rather than
- * thrown, so a notification problem never disturbs the handoff.
+ * Concrete {@link HandoffNotifier} over the WAHA client. Reads the Lead,
+ * resolves the current recipients, builds the alert body, and sends it to each
+ * recipient from the resolved sending number. Best-effort throughout: a missing
+ * Lead, no recipients, no available sending number, or a per-recipient failure
+ * is logged and skipped rather than thrown, so a notification problem never
+ * disturbs the handoff.
  */
 export class WahaHandoffNotifier implements HandoffNotifier {
 	private readonly waha: WahaHandoffNotifierConfig["waha"];
 	private readonly leads: WahaHandoffNotifierConfig["leads"];
-	private readonly consultantNumbers: readonly string[];
+	private readonly resolveRecipients: WahaHandoffNotifierConfig["resolveRecipients"];
 	private readonly resolveFromNumberId: () => Promise<string | undefined>;
 	private readonly crmBaseUrl?: string;
 
 	constructor(deps: WahaHandoffNotifierConfig) {
 		this.waha = deps.waha;
 		this.leads = deps.leads;
-		this.consultantNumbers = deps.consultantNumbers;
+		this.resolveRecipients = deps.resolveRecipients;
 		this.resolveFromNumberId = deps.resolveFromNumberId;
 		this.crmBaseUrl = deps.crmBaseUrl;
 	}
 
 	/** @inheritdoc */
 	async notify(leadId: string, reason: HandoffReason): Promise<void> {
-		if (this.consultantNumbers.length === 0) {
-			return;
-		}
 		const lead = await this.leads.findById(leadId);
 		if (!lead) {
+			return;
+		}
+		const recipients = await this.resolveRecipients(leadId);
+		if (recipients.length === 0) {
+			logger.warn(
+				{ event: "handoff.no_recipients", leadId },
+				"no consultant has a verified phone with alerts on; skipping alert",
+			);
 			return;
 		}
 		const fromNumberId = await this.resolveFromNumberId();
@@ -144,7 +156,7 @@ export class WahaHandoffNotifier implements HandoffNotifier {
 		}
 
 		const text = buildHandoffNotificationText(lead, reason, this.crmBaseUrl);
-		for (const recipient of this.consultantNumbers) {
+		for (const recipient of recipients) {
 			try {
 				const chatId = await this.waha.resolveChatId(recipient);
 				await this.waha.sendText(fromNumberId, chatId, text);

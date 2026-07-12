@@ -27,6 +27,7 @@ import { CADENCE_TEST_MODE, CADENCE_TOUCHES_COUNT } from "@/core/cadence";
 import { createRefreshableMessageGenerator } from "@/core/messages";
 import type { AntiBanConfig, Clock, TemplateKey } from "@/core/types";
 import { DrizzleComplianceRepository } from "@/db/compliance-repository";
+import { DrizzleConsultantRepository } from "@/db/consultant-repository";
 import { DrizzleHandoffRepository } from "@/db/handoff-repository";
 import { DrizzleLeadRepository } from "@/db/lead-repository";
 import { DrizzleMessageRepository } from "@/db/message-repository";
@@ -91,7 +92,10 @@ import {
 	type OutboundSendRequest,
 	type OutboundWorker,
 } from "@/services/outbound-worker";
-import type { MessageRepository } from "@/services/repositories";
+import type {
+	ConsultantRepository,
+	MessageRepository,
+} from "@/services/repositories";
 import {
 	createScoringEngine,
 	type ScoringEngine,
@@ -129,8 +133,12 @@ function connectionString(): string {
 
 /**
  * Parse the comma-separated consultant alert numbers from
- * `CONSULTANT_NOTIFY_NUMBERS` into a trimmed, non-empty E.164 list. An unset or
- * empty value yields `[]`, which disables the handoff notifier entirely.
+ * `CONSULTANT_NOTIFY_NUMBERS` into a trimmed, non-empty E.164 list.
+ *
+ * DEPRECATED: recipients now come from org membership (members with a verified
+ * phone and alerts on, see {@link consultantRecipientResolver}); this env list
+ * is only the migration fallback when no member qualifies yet. Delete it — and
+ * the env vars — once every org manages its consultants in the CRM.
  */
 function parseConsultantNumbers(raw: string | undefined): string[] {
 	if (!raw) {
@@ -140,6 +148,33 @@ function parseConsultantNumbers(raw: string | undefined): string[] {
 		.split(",")
 		.map((entry) => entry.trim())
 		.filter((entry) => entry.length > 0);
+}
+
+/**
+ * Build the handoff-alert recipient resolver: members with a verified phone
+ * and alerts on win; while none qualify, the deprecated
+ * `CONSULTANT_NOTIFY_NUMBERS` env list is used instead, with a
+ * `handoff.env_fallback` warning each time so the migration gap stays visible
+ * in the logs until the org configures a consultant in the CRM.
+ */
+function consultantRecipientResolver(
+	consultants: ConsultantRepository,
+	envNumbers: readonly string[],
+): (leadId: string) => Promise<readonly string[]> {
+	return async (leadId: string) => {
+		const recipients = await consultants.listHandoffAlertRecipients();
+		if (recipients.length > 0) {
+			return recipients;
+		}
+		if (envNumbers.length > 0) {
+			logger.warn(
+				{ event: "handoff.env_fallback", leadId },
+				"no member with a verified phone and alerts on; falling back to " +
+					"deprecated CONSULTANT_NOTIFY_NUMBERS",
+			);
+		}
+		return envNumbers;
+	};
 }
 
 /**
@@ -402,26 +437,25 @@ export function getRuntime(): Promise<Runtime> {
 				resolveNumber: numberSessionResolverFromRepository(numbers),
 				resolutionSession: process.env.WAHA_SESSION,
 			});
-			// Best-effort consultant alert on handoff (beta: env-configured). Only
-			// constructed when at least one consultant number is configured, so the
-			// handoff path stays a no-op for the notifier otherwise.
-			const consultantNumbers = parseConsultantNumbers(
-				process.env.CONSULTANT_NOTIFY_NUMBERS,
-			);
-			const handoffNotifier =
-				consultantNumbers.length > 0
-					? createHandoffNotifier({
-							waha,
-							leads,
-							consultantNumbers,
-							resolveFromNumberId: () =>
-								resolveNotifyFromNumberId(
-									numbers,
-									process.env.CONSULTANT_NOTIFY_FROM_NUMBER,
-								),
-							crmBaseUrl: process.env.CRM_BASE_URL,
-						})
-					: undefined;
+			// Best-effort consultant alert on handoff. Recipients are resolved at
+			// notify time from org membership (verified phone + alerts on), with the
+			// deprecated env list as migration fallback, so the notifier is always
+			// constructed — the no-recipient case no-ops (with a warning) per notify.
+			const consultants = new DrizzleConsultantRepository();
+			const handoffNotifier = createHandoffNotifier({
+				waha,
+				leads,
+				resolveRecipients: consultantRecipientResolver(
+					consultants,
+					parseConsultantNumbers(process.env.CONSULTANT_NOTIFY_NUMBERS),
+				),
+				resolveFromNumberId: () =>
+					resolveNotifyFromNumberId(
+						numbers,
+						process.env.CONSULTANT_NOTIFY_FROM_NUMBER,
+					),
+				crmBaseUrl: process.env.CRM_BASE_URL,
+			});
 			const handoff = createHandoffManager({
 				lifecycle,
 				handoffEvents: handoffRepo,
