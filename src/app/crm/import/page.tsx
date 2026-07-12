@@ -9,7 +9,25 @@
 
 import { useState } from "react";
 
-import { Card, PageHeader, StatusNote } from "../_components/ui";
+import { Button } from "@/components/ui/button";
+import {
+	Card,
+	CardContent,
+	CardHeader,
+	CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+	Table,
+	TableBody,
+	TableCell,
+	TableHead,
+	TableHeader,
+	TableRow,
+} from "@/components/ui/table";
+
+import { PageHeader, StatusNote } from "../_components/ui";
 import { useImportCsv } from "../_lib/api";
 import type { ImportReportView } from "../_lib/types";
 
@@ -25,10 +43,10 @@ function CountTile({
 }) {
 	const styles =
 		tone === "created"
-			? "bg-primary/10 text-primary"
+			? "bg-secondary/10 text-secondary"
 			: tone === "updated"
-				? "bg-accent/15 text-secondary"
-				: "bg-secondary/10 text-secondary";
+				? "bg-primary/10 text-primary"
+				: "bg-destructive/10 text-destructive";
 	return (
 		<div className={`rounded-lg px-4 py-3 ${styles}`}>
 			<div className="text-2xl font-semibold tabular-nums">{value}</div>
@@ -40,39 +58,39 @@ function CountTile({
 /** The per-row outcomes table, surfacing rejection reasons (Req 1.3, 20.3). */
 function ReportRows({ report }: { report: ImportReportView }) {
 	return (
-		<div className="overflow-hidden rounded-lg border border-ink/10">
-			<table className="w-full text-left text-sm">
-				<thead className="border-b border-ink/10 bg-surface/60 text-xs uppercase tracking-wide text-ink/50">
-					<tr>
-						<th className="px-4 py-2 font-medium">Linha</th>
-						<th className="px-4 py-2 font-medium">Resultado</th>
-						<th className="px-4 py-2 font-medium">Detalhe</th>
-					</tr>
-				</thead>
-				<tbody className="divide-y divide-ink/5">
+		<div className="overflow-hidden rounded-lg border border-border">
+			<Table>
+				<TableHeader>
+					<TableRow>
+						<TableHead>Linha</TableHead>
+						<TableHead>Resultado</TableHead>
+						<TableHead>Detalhe</TableHead>
+					</TableRow>
+				</TableHeader>
+				<TableBody>
 					{report.rows.map((row) => (
-						<tr key={`${row.rowNumber}-${row.outcome}`}>
-							<td className="px-4 py-2 tabular-nums text-ink/70">
+						<TableRow key={`${row.rowNumber}-${row.outcome}`}>
+							<TableCell className="tabular-nums text-muted-foreground">
 								{row.rowNumber}
-							</td>
-							<td className="px-4 py-2">
+							</TableCell>
+							<TableCell>
 								<span
 									className={
 										row.outcome === "rejected"
-											? "text-secondary"
-											: "text-primary"
+											? "text-destructive"
+											: "text-secondary"
 									}
 								>
 									{row.outcome}
 								</span>
-							</td>
-							<td className="px-4 py-2 text-ink/60">
+							</TableCell>
+							<TableCell className="text-muted-foreground">
 								{row.reason ?? row.leadId ?? "—"}
-							</td>
-						</tr>
+							</TableCell>
+						</TableRow>
 					))}
-				</tbody>
-			</table>
+				</TableBody>
+			</Table>
 		</div>
 	);
 }
@@ -98,29 +116,32 @@ export default function ImportPage() {
 			/>
 
 			<Card className="mb-6">
-				<form onSubmit={handleSubmit} className="flex flex-col gap-4">
-					<label className="flex flex-col gap-2 text-sm">
-						<span className="font-medium text-ink">Arquivo CSV</span>
-						<input
-							type="file"
-							accept=".csv,text/csv"
-							onChange={(event) => {
-								setFile(event.target.files?.[0] ?? null);
-								importCsv.reset();
-							}}
-							className="text-sm file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-sm file:text-surface hover:file:bg-primary/90"
-						/>
-					</label>
-					<div>
-						<button
-							type="submit"
-							disabled={!file || importCsv.isPending}
-							className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
-						>
-							{importCsv.isPending ? "Importando…" : "Importar CSV"}
-						</button>
-					</div>
-				</form>
+				<CardContent>
+					<form onSubmit={handleSubmit} className="flex flex-col gap-4">
+						<div className="flex flex-col gap-2">
+							<Label htmlFor="csv-file">Arquivo CSV</Label>
+							<Input
+								id="csv-file"
+								type="file"
+								accept=".csv,text/csv"
+								onChange={(event) => {
+									setFile(event.target.files?.[0] ?? null);
+									importCsv.reset();
+								}}
+								className="max-w-sm"
+							/>
+						</div>
+						<div>
+							<Button
+								type="submit"
+								variant="secondary"
+								disabled={!file || importCsv.isPending}
+							>
+								{importCsv.isPending ? "Importando…" : "Importar CSV"}
+							</Button>
+						</div>
+					</form>
+				</CardContent>
 			</Card>
 
 			{importCsv.isError ? (
@@ -129,33 +150,35 @@ export default function ImportPage() {
 
 			{report ? (
 				<Card>
-					<h2 className="mb-4 font-display text-lg font-semibold text-primary">
-						Resultado da importação
-					</h2>
-					<div className="mb-5 grid grid-cols-3 gap-3">
-						<CountTile
-							label="Criados"
-							value={report.createdCount}
-							tone="created"
-						/>
-						<CountTile
-							label="Atualizados"
-							value={report.updatedCount}
-							tone="updated"
-						/>
-						<CountTile
-							label="Rejeitados"
-							value={report.rejectedCount}
-							tone="rejected"
-						/>
-					</div>
-					{report.rows.length > 0 ? (
-						<ReportRows report={report} />
-					) : (
-						<p className="text-sm text-ink/50">
-							Nenhuma linha no arquivo enviado.
-						</p>
-					)}
+					<CardHeader>
+						<CardTitle>Resultado da importação</CardTitle>
+					</CardHeader>
+					<CardContent>
+						<div className="mb-5 grid grid-cols-3 gap-3">
+							<CountTile
+								label="Criados"
+								value={report.createdCount}
+								tone="created"
+							/>
+							<CountTile
+								label="Atualizados"
+								value={report.updatedCount}
+								tone="updated"
+							/>
+							<CountTile
+								label="Rejeitados"
+								value={report.rejectedCount}
+								tone="rejected"
+							/>
+						</div>
+						{report.rows.length > 0 ? (
+							<ReportRows report={report} />
+						) : (
+							<p className="text-sm text-muted-foreground">
+								Nenhuma linha no arquivo enviado.
+							</p>
+						)}
+					</CardContent>
 				</Card>
 			) : null}
 		</div>

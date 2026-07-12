@@ -9,6 +9,15 @@
 import Link from "next/link";
 
 import {
+	Table,
+	TableBody,
+	TableCell,
+	TableHead,
+	TableHeader,
+	TableRow,
+} from "@/components/ui/table";
+
+import {
 	LifecycleBadge,
 	PageHeader,
 	ScoreBadge,
@@ -35,48 +44,47 @@ export default function LeadListPage() {
 			) : null}
 
 			{leads && leads.length > 0 ? (
-				<div className="overflow-hidden rounded-lg border border-ink/10 bg-surface-card shadow-sm">
-					<table className="w-full text-left text-sm">
-						<thead className="border-b border-ink/10 bg-surface/60 text-xs uppercase tracking-wide text-ink/50">
-							<tr>
-								<th className="px-4 py-3 font-medium">Telefone</th>
-								<th className="px-4 py-3 font-medium">Origem</th>
-								<th className="px-4 py-3 font-medium">Estado</th>
-								<th className="px-4 py-3 font-medium">Pontuação</th>
-								<th className="px-4 py-3 font-medium">Atualizado</th>
-							</tr>
-						</thead>
-						<tbody className="divide-y divide-ink/5">
+				<div className="overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
+					<Table>
+						<TableHeader>
+							<TableRow>
+								<TableHead>Telefone</TableHead>
+								<TableHead>Origem</TableHead>
+								<TableHead>Estado</TableHead>
+								<TableHead>Pontuação</TableHead>
+								<TableHead>Atualizado</TableHead>
+							</TableRow>
+						</TableHeader>
+						<TableBody>
 							{leads.map((lead) => (
-								<tr
-									key={lead.id}
-									className="transition-colors hover:bg-surface/50"
-								>
-									<td className="px-4 py-3">
+								<TableRow key={lead.id}>
+									<TableCell>
 										<Link
 											href={`/crm/leads/${lead.id}`}
 											className="font-medium text-primary hover:underline"
 										>
 											{lead.phoneE164}
 										</Link>
-									</td>
-									<td className="px-4 py-3 text-ink/70">{lead.source}</td>
-									<td className="px-4 py-3">
+									</TableCell>
+									<TableCell className="text-muted-foreground">
+										{lead.source}
+									</TableCell>
+									<TableCell>
 										<LifecycleBadge state={lead.lifecycleState} />
-									</td>
-									<td className="px-4 py-3">
+									</TableCell>
+									<TableCell>
 										<ScoreBadge
 											score={lead.score}
 											band={lead.classificationBand}
 										/>
-									</td>
-									<td className="px-4 py-3 text-ink/50">
+									</TableCell>
+									<TableCell className="text-muted-foreground">
 										{formatDateTime(lead.updatedAt)}
-									</td>
-								</tr>
+									</TableCell>
+								</TableRow>
 							))}
-						</tbody>
-					</table>
+						</TableBody>
+					</Table>
 				</div>
 			) : null}
 		</div>

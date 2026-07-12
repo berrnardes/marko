@@ -60,7 +60,7 @@ function RadioPills({
 							onChange={() => onChange(option)}
 							className="peer sr-only"
 						/>
-						<span className="inline-block rounded-full border border-ink/20 px-4 py-2 text-sm text-ink/80 transition-colors duration-150 peer-checked:border-primary peer-checked:bg-primary peer-checked:text-surface peer-focus-visible:ring-2 peer-focus-visible:ring-accent hover:border-primary/50">
+						<span className="inline-block rounded-full border border-ink/20 px-4 py-2 text-sm text-ink/80 transition-colors duration-150 peer-checked:border-primary peer-checked:bg-primary peer-checked:text-surface peer-focus-visible:ring-2 peer-focus-visible:ring-secondary hover:border-primary/50">
 							{option}
 						</span>
 					</label>
@@ -166,7 +166,7 @@ export function LeadForm() {
 			/>
 
 			{error ? (
-				<p role="alert" className="text-sm font-medium text-accent">
+				<p role="alert" className="text-sm font-medium text-secondary">
 					{error}
 				</p>
 			) : null}
@@ -174,7 +174,7 @@ export function LeadForm() {
 			<div className="space-y-3">
 				<button
 					type="submit"
-					className="flex w-full items-center justify-center gap-2 rounded-full bg-accent px-6 py-4 text-base font-semibold text-white shadow-lg shadow-accent/30 transition-transform duration-200 hover:-translate-y-0.5 motion-reduce:transform-none"
+					className="flex w-full items-center justify-center gap-2 rounded-full bg-secondary px-6 py-4 text-base font-semibold text-white shadow-lg shadow-secondary/30 transition-transform duration-200 hover:-translate-y-0.5 motion-reduce:transform-none"
 				>
 					<svg
 						aria-hidden

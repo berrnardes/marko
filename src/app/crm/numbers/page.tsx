@@ -9,7 +9,25 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { PageHeader, StatusNote } from "../_components/ui";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+	Card,
+	CardAction,
+	CardContent,
+	CardHeader,
+	CardTitle,
+} from "@/components/ui/card";
+import {
+	Table,
+	TableBody,
+	TableCell,
+	TableHead,
+	TableHeader,
+	TableRow,
+} from "@/components/ui/table";
+
+import { ConfirmButton, PageHeader, StatusNote } from "../_components/ui";
 import {
 	useCancelSession,
 	useConfirmSession,
@@ -79,56 +97,53 @@ function ConnectPanel({ onClose }: { onClose: () => void }) {
 						: "starting";
 
 	return (
-		<div className="mb-6 rounded-lg border border-primary/20 bg-surface-card p-6 shadow-sm">
-			<div className="mb-4 flex items-center justify-between">
-				<h2 className="text-sm font-semibold text-ink">Conectar novo número</h2>
-				<button
-					type="button"
-					onClick={handleCancel}
-					className="rounded-md border border-ink/20 px-2.5 py-1 text-xs transition-colors hover:bg-ink/5"
-				>
-					Cancelar
-				</button>
-			</div>
+		<Card className="mb-6">
+			<CardHeader>
+				<CardTitle>Conectar novo número</CardTitle>
+				<CardAction>
+					<Button variant="outline" size="sm" onClick={handleCancel}>
+						Cancelar
+					</Button>
+				</CardAction>
+			</CardHeader>
+			<CardContent>
+				{phase === "starting" ? (
+					<StatusNote>Iniciando sessão WhatsApp…</StatusNote>
+				) : null}
 
-			{phase === "starting" ? (
-				<StatusNote>Iniciando sessão WhatsApp…</StatusNote>
-			) : null}
+				{phase === "scan" ? (
+					<div className="flex flex-col items-center gap-3">
+						{status?.qr ? (
+							// eslint-disable-next-line @next/next/no-img-element
+							<img
+								src={status.qr}
+								alt="QR code para conectar o WhatsApp"
+								className="h-56 w-56 rounded-md border border-border bg-white p-2"
+							/>
+						) : (
+							<StatusNote>Gerando QR code…</StatusNote>
+						)}
+						<p className="max-w-xs text-center text-xs text-muted-foreground">
+							Abra o WhatsApp no celular do número, toque em{" "}
+							<strong>Aparelhos conectados</strong> e aponte a câmera para o QR
+							code. Ele é atualizado automaticamente.
+						</p>
+					</div>
+				) : null}
 
-			{phase === "scan" ? (
-				<div className="flex flex-col items-center gap-3">
-					{status?.qr ? (
-						// eslint-disable-next-line @next/next/no-img-element
-						<img
-							src={status.qr}
-							alt="QR code para conectar o WhatsApp"
-							className="h-56 w-56 rounded-md border border-ink/10 bg-white p-2"
-						/>
-					) : (
-						<StatusNote>Gerando QR code…</StatusNote>
-					)}
-					<p className="max-w-xs text-center text-xs text-ink/60">
-						Abra o WhatsApp no celular do número, toque em{" "}
-						<strong>Aparelhos conectados</strong> e aponte a câmera para o QR
-						code. Ele é atualizado automaticamente.
-					</p>
-				</div>
-			) : null}
+				{phase === "confirming" ? (
+					<StatusNote>Conectado! Registrando o número…</StatusNote>
+				) : null}
 
-			{phase === "confirming" ? (
-				<StatusNote>Conectado! Registrando o número…</StatusNote>
-			) : null}
+				{phase === "failed" ? (
+					<StatusNote tone="error">
+						A sessão falhou. Feche e tente conectar novamente.
+					</StatusNote>
+				) : null}
 
-			{phase === "failed" ? (
-				<StatusNote tone="error">
-					A sessão falhou. Feche e tente conectar novamente.
-				</StatusNote>
-			) : null}
-
-			{phase === "error" ? (
-				<StatusNote tone="error">{error}</StatusNote>
-			) : null}
-		</div>
+				{phase === "error" ? <StatusNote tone="error">{error}</StatusNote> : null}
+			</CardContent>
+		</Card>
 	);
 }
 
@@ -149,13 +164,9 @@ export default function NumbersPage() {
 			{connecting ? (
 				<ConnectPanel onClose={() => setConnecting(false)} />
 			) : (
-				<button
-					type="button"
-					onClick={() => setConnecting(true)}
-					className="mb-6 rounded-md bg-primary px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary/90"
-				>
+				<Button className="mb-6" onClick={() => setConnecting(true)}>
 					Conectar novo número
-				</button>
+				</Button>
 			)}
 
 			{/* State */}
@@ -170,71 +181,68 @@ export default function NumbersPage() {
 
 			{/* Number list */}
 			{numbers && numbers.length > 0 ? (
-				<div className="overflow-x-auto rounded-lg border border-ink/10 shadow-sm">
-					<table className="w-full text-left text-sm">
-						<thead className="border-b border-ink/10 bg-surface-card text-xs font-medium text-ink/60">
-							<tr>
-								<th className="px-4 py-3">Sessão</th>
-								<th className="px-4 py-3">Número</th>
-								<th className="px-4 py-3">Status</th>
-								<th className="px-4 py-3">Enviados hoje</th>
-								<th className="px-4 py-3">Warm-up desde</th>
-								<th className="px-4 py-3">Ações</th>
-							</tr>
-						</thead>
-						<tbody className="divide-y divide-ink/5">
+				<div className="overflow-x-auto rounded-xl bg-card ring-1 ring-foreground/10">
+					<Table>
+						<TableHeader>
+							<TableRow>
+								<TableHead>Sessão</TableHead>
+								<TableHead>Número</TableHead>
+								<TableHead>Status</TableHead>
+								<TableHead>Enviados hoje</TableHead>
+								<TableHead>Warm-up desde</TableHead>
+								<TableHead>Ações</TableHead>
+							</TableRow>
+						</TableHeader>
+						<TableBody>
 							{numbers.map((num) => (
-								<tr key={num.id} className="bg-surface">
-									<td className="px-4 py-3 font-medium">{num.sessionName}</td>
-									<td className="px-4 py-3 font-mono text-xs">{num.msisdn}</td>
-									<td className="px-4 py-3">
+								<TableRow key={num.id}>
+									<TableCell className="font-medium">
+										{num.sessionName}
+									</TableCell>
+									<TableCell className="font-mono text-xs">
+										{num.msisdn}
+									</TableCell>
+									<TableCell>
 										{num.blocked ? (
-											<span className="inline-flex items-center rounded-full bg-secondary/15 px-2 py-0.5 text-xs font-medium text-secondary">
-												Bloqueado
-											</span>
+											<Badge variant="destructive">Bloqueado</Badge>
 										) : (
-											<span className="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">
+											<Badge className="border-transparent bg-secondary/10 text-secondary">
 												Ativo
-											</span>
+											</Badge>
 										)}
-									</td>
-									<td className="px-4 py-3 tabular-nums">{num.dailySent}</td>
-									<td className="px-4 py-3 text-ink/60">
+									</TableCell>
+									<TableCell className="tabular-nums">{num.dailySent}</TableCell>
+									<TableCell className="text-muted-foreground">
 										{new Date(num.warmupStartDate).toLocaleDateString("pt-BR")}
-									</td>
-									<td className="flex items-center gap-2 px-4 py-3">
-										<button
-											type="button"
-											onClick={() =>
-												toggleBlock.mutate({
-													numberId: num.id,
-													blocked: !num.blocked,
-												})
-											}
-											className="rounded-md border border-ink/20 px-2.5 py-1 text-xs transition-colors hover:bg-ink/5"
-										>
-											{num.blocked ? "Desbloquear" : "Bloquear"}
-										</button>
-										<button
-											type="button"
-											onClick={() => {
-												if (
-													confirm(
-														`Remover o número ${num.msisdn}? A sessão WhatsApp será desconectada. Esta ação não pode ser desfeita.`,
-													)
-												) {
-													deleteNumber.mutate(num.id);
+									</TableCell>
+									<TableCell>
+										<div className="flex items-center gap-2">
+											<Button
+												variant="outline"
+												size="sm"
+												onClick={() =>
+													toggleBlock.mutate({
+														numberId: num.id,
+														blocked: !num.blocked,
+													})
 												}
-											}}
-											className="rounded-md border border-secondary/30 px-2.5 py-1 text-xs text-secondary transition-colors hover:bg-secondary/10"
-										>
-											Remover
-										</button>
-									</td>
-								</tr>
+											>
+												{num.blocked ? "Desbloquear" : "Bloquear"}
+											</Button>
+											<ConfirmButton
+												title="Remover número"
+												description={`Remover o número ${num.msisdn}? A sessão WhatsApp será desconectada. Esta ação não pode ser desfeita.`}
+												confirmLabel="Remover"
+												onConfirm={() => deleteNumber.mutate(num.id)}
+											>
+												Remover
+											</ConfirmButton>
+										</div>
+									</TableCell>
+								</TableRow>
 							))}
-						</tbody>
-					</table>
+						</TableBody>
+					</Table>
 				</div>
 			) : null}
 		</div>

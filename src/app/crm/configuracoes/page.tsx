@@ -7,7 +7,26 @@
 
 "use client";
 
+import { REGEXP_ONLY_DIGITS } from "input-otp";
 import { useState } from "react";
+
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+	Card,
+	CardContent,
+	CardHeader,
+	CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import {
+	InputOTP,
+	InputOTPGroup,
+	InputOTPSlot,
+} from "@/components/ui/input-otp";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 
 import { PageHeader, StatusNote } from "../_components/ui";
 import {
@@ -19,16 +38,25 @@ import {
 } from "../_lib/api";
 import type { NotificationSettingsView } from "../_lib/types";
 
+/** Inline error surface for a failed mutation. */
+function ErrorNote({ message }: { message: string }) {
+	return (
+		<Alert variant="destructive">
+			<AlertDescription>{message}</AlertDescription>
+		</Alert>
+	);
+}
+
 /** Small green/amber pill for the phone's verification state. */
 function VerificationBadge({ verified }: { verified: boolean }) {
 	return verified ? (
-		<span className="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">
+		<Badge className="border-transparent bg-secondary/10 text-secondary">
 			Verificado
-		</span>
+		</Badge>
 	) : (
-		<span className="inline-flex items-center rounded-full bg-accent/15 px-2 py-0.5 text-xs font-medium text-secondary">
+		<Badge variant="outline" className="text-muted-foreground">
 			Não verificado
-		</span>
+		</Badge>
 	);
 }
 
@@ -64,43 +92,33 @@ function PhoneSection({ settings }: { settings: NotificationSettingsView }) {
 	if (editing || (!settings.phoneE164 && !pending)) {
 		return (
 			<div className="flex flex-col gap-3">
-				<label className="text-sm text-ink/80" htmlFor="alert-phone">
-					Seu WhatsApp (DDD + número)
-				</label>
+				<Label htmlFor="alert-phone">Seu WhatsApp (DDD + número)</Label>
 				<div className="flex flex-wrap items-center gap-2">
-					<input
+					<Input
 						id="alert-phone"
 						type="tel"
 						value={phoneInput}
 						onChange={(e) => setPhoneInput(e.target.value)}
 						placeholder="(47) 99999-0000"
-						className="w-56 rounded-md border border-ink/20 bg-surface px-3 py-2 text-sm outline-none focus:border-primary"
+						className="w-56"
 					/>
-					<button
-						type="button"
+					<Button
 						disabled={busy || phoneInput.trim() === ""}
 						onClick={() => submitPhone(phoneInput)}
-						className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary/90 disabled:opacity-50"
 					>
 						{setPhone.isPending ? "Enviando…" : "Enviar código"}
-					</button>
+					</Button>
 					{editing ? (
-						<button
-							type="button"
-							onClick={() => setEditing(false)}
-							className="rounded-md border border-ink/20 px-3 py-2 text-sm transition-colors hover:bg-ink/5"
-						>
+						<Button variant="outline" onClick={() => setEditing(false)}>
 							Cancelar
-						</button>
+						</Button>
 					) : null}
 				</div>
-				<p className="text-xs text-ink/50">
+				<p className="text-xs text-muted-foreground">
 					Enviaremos um código de confirmação por WhatsApp. Só números
 					verificados recebem alertas.
 				</p>
-				{setPhone.isError ? (
-					<StatusNote tone="error">{setPhone.error.message}</StatusNote>
-				) : null}
+				{setPhone.isError ? <ErrorNote message={setPhone.error.message} /> : null}
 			</div>
 		);
 	}
@@ -109,51 +127,46 @@ function PhoneSection({ settings }: { settings: NotificationSettingsView }) {
 	if (pending) {
 		return (
 			<div className="flex flex-col gap-3">
-				<p className="text-sm text-ink/80">
+				<p className="text-sm text-foreground/80">
 					Enviamos um código por WhatsApp para{" "}
 					<span className="font-mono text-xs">{pending.phoneE164}</span>. Digite
 					o código de 6 dígitos:
 				</p>
-				<div className="flex flex-wrap items-center gap-2">
-					<input
-						type="text"
-						inputMode="numeric"
+				<div className="flex flex-wrap items-center gap-3">
+					<InputOTP
 						maxLength={6}
+						pattern={REGEXP_ONLY_DIGITS}
 						value={codeInput}
-						onChange={(e) => setCodeInput(e.target.value.replace(/\D+/g, ""))}
-						placeholder="000000"
-						className="w-32 rounded-md border border-ink/20 bg-surface px-3 py-2 text-center font-mono text-sm tracking-widest outline-none focus:border-primary"
-					/>
-					<button
-						type="button"
+						onChange={setCodeInput}
+					>
+						<InputOTPGroup>
+							<InputOTPSlot index={0} />
+							<InputOTPSlot index={1} />
+							<InputOTPSlot index={2} />
+							<InputOTPSlot index={3} />
+							<InputOTPSlot index={4} />
+							<InputOTPSlot index={5} />
+						</InputOTPGroup>
+					</InputOTP>
+					<Button
 						disabled={busy || codeInput.length !== 6}
 						onClick={() => verify.mutate(codeInput)}
-						className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary/90 disabled:opacity-50"
 					>
 						{verify.isPending ? "Confirmando…" : "Confirmar"}
-					</button>
-					<button
-						type="button"
+					</Button>
+					<Button
+						variant="outline"
 						disabled={busy}
 						onClick={() => submitPhone(pending.phoneE164)}
-						className="rounded-md border border-ink/20 px-3 py-2 text-sm transition-colors hover:bg-ink/5 disabled:opacity-50"
 					>
 						Reenviar código
-					</button>
-					<button
-						type="button"
-						onClick={() => setEditing(true)}
-						className="rounded-md border border-ink/20 px-3 py-2 text-sm transition-colors hover:bg-ink/5"
-					>
+					</Button>
+					<Button variant="ghost" onClick={() => setEditing(true)}>
 						Usar outro número
-					</button>
+					</Button>
 				</div>
-				{verify.isError ? (
-					<StatusNote tone="error">{verify.error.message}</StatusNote>
-				) : null}
-				{setPhone.isError ? (
-					<StatusNote tone="error">{setPhone.error.message}</StatusNote>
-				) : null}
+				{verify.isError ? <ErrorNote message={verify.error.message} /> : null}
+				{setPhone.isError ? <ErrorNote message={setPhone.error.message} /> : null}
 			</div>
 		);
 	}
@@ -165,42 +178,34 @@ function PhoneSection({ settings }: { settings: NotificationSettingsView }) {
 				<span className="font-mono text-sm">{settings.phoneE164}</span>
 				<VerificationBadge verified={settings.phoneVerified} />
 				{!settings.phoneVerified ? (
-					<button
-						type="button"
+					<Button
+						size="sm"
 						disabled={busy}
 						onClick={() => submitPhone(settings.phoneE164 ?? "")}
-						className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-primary/90 disabled:opacity-50"
 					>
 						{setPhone.isPending ? "Enviando…" : "Enviar código"}
-					</button>
+					</Button>
 				) : null}
-				<button
-					type="button"
-					onClick={() => setEditing(true)}
-					className="rounded-md border border-ink/20 px-3 py-1.5 text-xs transition-colors hover:bg-ink/5"
-				>
+				<Button variant="outline" size="sm" onClick={() => setEditing(true)}>
 					Alterar número
-				</button>
+				</Button>
 				{settings.phoneVerified ? (
-					<button
-						type="button"
+					<Button
+						variant="outline"
+						size="sm"
 						disabled={testAlert.isPending}
 						onClick={() => testAlert.mutate()}
-						className="rounded-md border border-primary/30 px-3 py-1.5 text-xs text-primary transition-colors hover:bg-primary/5 disabled:opacity-50"
+						className="border-secondary/30 text-secondary hover:bg-secondary/5 hover:text-secondary"
 					>
 						{testAlert.isPending ? "Enviando…" : "Enviar alerta de teste"}
-					</button>
+					</Button>
 				) : null}
 			</div>
 			{testAlert.isSuccess ? (
 				<StatusNote>Alerta de teste enviado para o seu WhatsApp.</StatusNote>
 			) : null}
-			{testAlert.isError ? (
-				<StatusNote tone="error">{testAlert.error.message}</StatusNote>
-			) : null}
-			{setPhone.isError ? (
-				<StatusNote tone="error">{setPhone.error.message}</StatusNote>
-			) : null}
+			{testAlert.isError ? <ErrorNote message={testAlert.error.message} /> : null}
+			{setPhone.isError ? <ErrorNote message={setPhone.error.message} /> : null}
 		</div>
 	);
 }
@@ -210,25 +215,24 @@ function AlertToggle({ settings }: { settings: NotificationSettingsView }) {
 	const toggle = useToggleHandoffAlerts();
 	return (
 		<div className="flex flex-col gap-2">
-			<label className="flex items-center gap-3 text-sm text-ink/80">
-				<input
-					type="checkbox"
+			<div className="flex items-center gap-3">
+				<Switch
+					id="handoff-alerts"
 					checked={settings.receivesHandoffAlerts}
 					disabled={toggle.isPending}
-					onChange={(e) => toggle.mutate(e.target.checked)}
-					className="h-4 w-4 accent-primary"
+					onCheckedChange={(checked) => toggle.mutate(checked)}
 				/>
-				Receber alertas de novos leads repassados
-			</label>
+				<Label htmlFor="handoff-alerts" className="font-normal">
+					Receber alertas de novos leads repassados
+				</Label>
+			</div>
 			{!settings.phoneVerified ? (
-				<p className="text-xs text-ink/50">
+				<p className="text-xs text-muted-foreground">
 					Mesmo com os alertas ativados, você só recebe mensagens após
 					verificar seu WhatsApp acima.
 				</p>
 			) : null}
-			{toggle.isError ? (
-				<StatusNote tone="error">{toggle.error.message}</StatusNote>
-			) : null}
+			{toggle.isError ? <ErrorNote message={toggle.error.message} /> : null}
 		</div>
 	);
 }
@@ -248,19 +252,23 @@ export default function ConfiguracoesPage() {
 
 			{settings ? (
 				<div className="flex max-w-2xl flex-col gap-6">
-					<section className="rounded-lg border border-ink/10 bg-surface-card p-6 shadow-sm">
-						<h2 className="mb-4 text-sm font-semibold text-ink">
-							Seu WhatsApp para alertas
-						</h2>
-						<PhoneSection settings={settings} />
-					</section>
+					<Card>
+						<CardHeader>
+							<CardTitle>Seu WhatsApp para alertas</CardTitle>
+						</CardHeader>
+						<CardContent>
+							<PhoneSection settings={settings} />
+						</CardContent>
+					</Card>
 
-					<section className="rounded-lg border border-ink/10 bg-surface-card p-6 shadow-sm">
-						<h2 className="mb-4 text-sm font-semibold text-ink">
-							Alertas de repasse
-						</h2>
-						<AlertToggle settings={settings} />
-					</section>
+					<Card>
+						<CardHeader>
+							<CardTitle>Alertas de repasse</CardTitle>
+						</CardHeader>
+						<CardContent>
+							<AlertToggle settings={settings} />
+						</CardContent>
+					</Card>
 				</div>
 			) : null}
 		</div>

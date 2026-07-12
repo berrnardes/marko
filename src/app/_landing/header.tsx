@@ -33,7 +33,7 @@ export function LandingHeader() {
 		>
 			<div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5 sm:px-8">
 				<a href="#" className="font-display text-2xl font-semibold tracking-tight">
-					Marko<span className="text-accent">.</span>
+					Marko<span className="text-secondary">.</span>
 				</a>
 				<nav className="hidden items-center gap-7 text-sm font-medium md:flex">
 					{NAV_LINKS.map((link) => (
@@ -48,7 +48,7 @@ export function LandingHeader() {
 				</nav>
 				<a
 					href="#simulacao"
-					className="rounded-full bg-accent px-4 py-2 text-sm font-semibold text-white shadow-sm transition-transform duration-200 hover:-translate-y-0.5 hover:shadow-md motion-reduce:transform-none"
+					className="rounded-full bg-secondary px-4 py-2 text-sm font-semibold text-white shadow-sm transition-transform duration-200 hover:-translate-y-0.5 hover:shadow-md motion-reduce:transform-none"
 				>
 					Simulação gratuita
 				</a>

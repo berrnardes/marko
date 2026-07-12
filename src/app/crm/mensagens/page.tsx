@@ -10,10 +10,22 @@
 
 import { useRef, useState } from "react";
 
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+	Card,
+	CardAction,
+	CardContent,
+	CardDescription,
+	CardFooter,
+	CardHeader,
+	CardTitle,
+} from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
 import { renderTemplate } from "@/core/messages";
 import type { LeadView } from "@/core/types";
 
-import { PageHeader, StatusNote } from "../_components/ui";
+import { ConfirmButton, PageHeader, StatusNote } from "../_components/ui";
 import { useResetTemplate, useSaveTemplate, useTemplates } from "../_lib/api";
 import type { TemplatePlaceholderView, TemplateView } from "../_lib/types";
 
@@ -76,98 +88,85 @@ function TemplateCard({
 	}
 
 	return (
-		<section className="rounded-lg border border-ink/10 bg-surface-card p-5 shadow-sm">
-			<div className="mb-3 flex items-start justify-between gap-3">
-				<div>
-					<h2 className="font-display text-lg font-semibold text-primary">
-						{template.label}
-					</h2>
-					<p className="mt-0.5 text-sm text-ink/60">{template.description}</p>
-				</div>
-				{template.isCustomized ? (
-					<span className="shrink-0 rounded-full bg-accent/15 px-2 py-0.5 text-xs font-medium text-secondary">
-						Personalizado
-					</span>
-				) : (
-					<span className="shrink-0 rounded-full bg-ink/5 px-2 py-0.5 text-xs font-medium text-ink/50">
-						Padrão
-					</span>
-				)}
-			</div>
-
-			{/* Variable legend (clickable chips insert at the cursor). */}
-			<div className="mb-2 flex flex-wrap gap-1.5">
-				{placeholders.map((p) => (
-					<button
-						key={p.token}
-						type="button"
-						title={p.description}
-						onClick={() => insertToken(p.token)}
-						className="rounded-md border border-primary/20 bg-primary/5 px-2 py-0.5 font-mono text-xs text-primary transition-colors hover:bg-primary/10"
-					>
-						{p.token}
-					</button>
-				))}
-			</div>
-
-			<textarea
-				ref={textareaRef}
-				value={body}
-				onChange={(e) => setBody(e.target.value)}
-				rows={4}
-				className="w-full resize-y rounded-md border border-ink/20 bg-surface px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-			/>
-
-			{/* Live preview against the sample lead. */}
-			<div className="mt-3">
-				<p className="mb-1 text-xs font-medium text-ink/50">
-					Prévia (lead de exemplo)
-				</p>
-				<p className="rounded-md bg-surface px-3 py-2 text-sm text-ink/80">
-					{preview || (
-						<span className="text-ink/40">Mensagem vazia.</span>
+		<Card>
+			<CardHeader>
+				<CardTitle>{template.label}</CardTitle>
+				<CardDescription>{template.description}</CardDescription>
+				<CardAction>
+					{template.isCustomized ? (
+						<Badge className="border-transparent bg-secondary/10 text-secondary">
+							Personalizado
+						</Badge>
+					) : (
+						<Badge variant="outline" className="text-muted-foreground">
+							Padrão
+						</Badge>
 					)}
-				</p>
-			</div>
+				</CardAction>
+			</CardHeader>
+			<CardContent className="flex flex-col gap-3">
+				{/* Variable legend (clickable chips insert at the cursor). */}
+				<div className="flex flex-wrap gap-1.5">
+					{placeholders.map((p) => (
+						<Button
+							key={p.token}
+							variant="outline"
+							size="xs"
+							title={p.description}
+							onClick={() => insertToken(p.token)}
+							className="font-mono text-primary"
+						>
+							{p.token}
+						</Button>
+					))}
+				</div>
 
-			<div className="mt-3 flex items-center gap-2">
-				<button
-					type="button"
-					disabled={!dirty || empty || saving}
-					onClick={() => onSave(body)}
-					className="rounded-md bg-primary px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-primary/90 disabled:opacity-50"
-				>
+				<Textarea
+					ref={textareaRef}
+					value={body}
+					onChange={(e) => setBody(e.target.value)}
+					rows={4}
+					className="resize-y"
+				/>
+
+				{/* Live preview against the sample lead. */}
+				<div>
+					<p className="mb-1 text-xs font-medium text-muted-foreground">
+						Prévia (lead de exemplo)
+					</p>
+					<p className="rounded-md bg-muted px-3 py-2 text-sm text-foreground/80">
+						{preview || (
+							<span className="text-muted-foreground">Mensagem vazia.</span>
+						)}
+					</p>
+				</div>
+			</CardContent>
+			<CardFooter className="gap-2">
+				<Button disabled={!dirty || empty || saving} onClick={() => onSave(body)}>
 					{saving ? "Salvando…" : "Salvar"}
-				</button>
+				</Button>
 				{dirty ? (
-					<button
-						type="button"
-						onClick={() => setBody(template.body)}
-						className="rounded-md border border-ink/20 px-3 py-1.5 text-sm transition-colors hover:bg-ink/5"
-					>
+					<Button variant="ghost" onClick={() => setBody(template.body)}>
 						Cancelar
-					</button>
+					</Button>
 				) : null}
 				{template.isCustomized ? (
-					<button
-						type="button"
-						disabled={resetting}
-						onClick={() => {
-							if (
-								confirm(
-									`Restaurar a mensagem "${template.label}" para o texto padrão?`,
-								)
-							) {
-								onReset();
-							}
-						}}
-						className="ml-auto rounded-md border border-secondary/30 px-3 py-1.5 text-sm text-secondary transition-colors hover:bg-secondary/10 disabled:opacity-50"
-					>
-						Restaurar padrão
-					</button>
+					<div className="ml-auto">
+						<ConfirmButton
+							variant="outline"
+							size="default"
+							title="Restaurar padrão"
+							description={`Restaurar a mensagem "${template.label}" para o texto padrão? O texto personalizado será perdido.`}
+							confirmLabel="Restaurar"
+							onConfirm={onReset}
+							disabled={resetting}
+						>
+							Restaurar padrão
+						</ConfirmButton>
+					</div>
 				) : null}
-			</div>
-		</section>
+			</CardFooter>
+		</Card>
 	);
 }
 
@@ -184,9 +183,7 @@ export default function MensagensPage() {
 				description="Edite as mensagens automáticas de cadência (T1–T5) e o nurture mensal. Use as variáveis para personalizar com os dados do lead."
 			/>
 
-			{actionError ? (
-				<StatusNote tone="error">{actionError}</StatusNote>
-			) : null}
+			{actionError ? <StatusNote tone="error">{actionError}</StatusNote> : null}
 
 			{isPending ? <StatusNote>Carregando mensagens…</StatusNote> : null}
 			{isError ? <StatusNote tone="error">{error.message}</StatusNote> : null}

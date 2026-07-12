@@ -10,6 +10,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 
+import { Button } from "@/components/ui/button";
 import { signOut } from "@/services/auth-client";
 
 const LINKS: ReadonlyArray<{ href: string; label: string }> = [
@@ -42,9 +43,9 @@ export function CrmNav({ email }: { email: string | null }) {
 	}
 
 	return (
-		<header className="border-b border-ink/10 bg-primary text-surface">
+		<header className="bg-primary text-primary-foreground">
 			<div className="mx-auto flex max-w-6xl items-center gap-6 px-6 py-3">
-				<Link href="/crm" className="font-display text-lg font-semibold">
+				<Link href="/crm" className="font-heading text-lg font-semibold">
 					Marko
 				</Link>
 				<nav className="flex items-center gap-1 text-sm">
@@ -54,8 +55,8 @@ export function CrmNav({ email }: { email: string | null }) {
 							href={link.href}
 							className={`rounded-md px-3 py-1.5 transition-colors ${
 								isActive(pathname, link.href)
-									? "bg-surface/15 font-medium text-white"
-									: "text-surface/75 hover:bg-surface/10 hover:text-white"
+									? "bg-primary-foreground/15 font-medium text-white"
+									: "text-primary-foreground/75 hover:bg-primary-foreground/10 hover:text-white"
 							}`}
 						>
 							{link.label}
@@ -63,14 +64,17 @@ export function CrmNav({ email }: { email: string | null }) {
 					))}
 				</nav>
 				<div className="ml-auto flex items-center gap-3 text-sm">
-					{email ? <span className="text-surface/70">{email}</span> : null}
-					<button
-						type="button"
+					{email ? (
+						<span className="text-primary-foreground/70">{email}</span>
+					) : null}
+					<Button
+						variant="outline"
+						size="sm"
 						onClick={handleSignOut}
-						className="rounded-md border border-surface/30 px-3 py-1.5 text-surface/90 transition-colors hover:bg-surface/10 hover:text-white"
+						className="border-primary-foreground/30 bg-transparent text-primary-foreground/90 hover:bg-primary-foreground/10 hover:text-white"
 					>
 						Sair
-					</button>
+					</Button>
 				</div>
 			</div>
 		</header>

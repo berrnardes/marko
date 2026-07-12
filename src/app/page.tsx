@@ -174,7 +174,7 @@ function Eyebrow({
 	return (
 		<p
 			className={`mb-4 text-xs font-semibold uppercase tracking-[0.2em] ${
-				tone === "light" ? "text-surface/70" : "text-accent"
+				tone === "light" ? "text-surface/70" : "text-secondary"
 			}`}
 		>
 			{children}
@@ -192,7 +192,7 @@ function VerdictMark({ verdict }: { verdict: Verdict }) {
 	}
 	if (verdict === "bad") {
 		return (
-			<span aria-label="desvantagem" className="font-bold text-accent">
+			<span aria-label="desvantagem" className="font-bold text-secondary">
 				✗
 			</span>
 		);
@@ -239,7 +239,7 @@ function Hero() {
 						</Eyebrow>
 						<h1 className="text-4xl font-bold leading-[1.08] tracking-tight sm:text-5xl lg:text-6xl">
 							Todo mês você paga por um imóvel.{" "}
-							<em className="font-display font-medium italic text-accent">
+							<em className="font-display font-medium italic text-secondary">
 								Só que ele não é seu.
 							</em>
 						</h1>
@@ -256,7 +256,7 @@ function Hero() {
 						<div className="mt-9">
 							<a
 								href="#simulacao"
-								className="inline-block rounded-full bg-accent px-8 py-4 text-base font-semibold text-white shadow-lg shadow-black/20 transition-transform duration-200 hover:-translate-y-0.5 motion-reduce:transform-none"
+								className="inline-block rounded-full bg-secondary px-8 py-4 text-base font-semibold text-white shadow-lg shadow-black/20 transition-transform duration-200 hover:-translate-y-0.5 motion-reduce:transform-none"
 							>
 								Fazer minha simulação gratuita
 							</a>
@@ -284,7 +284,7 @@ function Hero() {
 				{/* Elemento-assinatura: "A conta que ninguém te mostra" */}
 				<Reveal delay={300}>
 					<div className="rounded-3xl bg-surface-card p-7 text-ink shadow-2xl shadow-black/25 sm:p-9">
-						<p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">
+						<p className="text-xs font-semibold uppercase tracking-[0.2em] text-secondary">
 							A conta que ninguém te mostra
 						</p>
 						<dl className="mt-6 space-y-5">
@@ -292,7 +292,7 @@ function Hero() {
 								<dt className="text-sm text-ink/70">
 									Aluguel R$ 2.000 × 120 meses
 								</dt>
-								<dd className="text-xl font-bold text-accent sm:text-2xl">
+								<dd className="text-xl font-bold text-secondary sm:text-2xl">
 									<CountUp target={240_000} prefix="− R$ " />
 								</dd>
 							</div>
@@ -338,7 +338,7 @@ function Enemies() {
 				{ENEMIES.map((enemy, index) => (
 					<Reveal key={enemy.number} delay={index * 120}>
 						<article className="h-full rounded-2xl border border-ink/10 bg-surface-card p-8">
-							<p className="font-display text-5xl font-semibold italic text-accent/30">
+							<p className="font-display text-5xl font-semibold italic text-secondary/30">
 								{enemy.number}
 							</p>
 							<h3 className="mt-4 text-xl font-bold">{enemy.title}</h3>
@@ -373,7 +373,7 @@ function HowItWorks() {
 					{STEPS.map((step, index) => (
 						<Reveal key={step.step} delay={index * 140}>
 							<li className="relative h-full rounded-2xl bg-surface p-8">
-								<p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">
+								<p className="text-xs font-semibold uppercase tracking-[0.2em] text-secondary">
 									{step.step}
 								</p>
 								<h3 className="mt-3 text-xl font-bold">{step.title}</h3>
@@ -443,7 +443,7 @@ function Comparison() {
 				</div>
 			</Reveal>
 			<Reveal delay={220}>
-				<blockquote className="mt-8 rounded-2xl border-l-4 border-accent bg-surface-card p-7 sm:p-8">
+				<blockquote className="mt-8 rounded-2xl border-l-4 border-secondary bg-surface-card p-7 sm:p-8">
 					<p className="text-lg leading-relaxed text-ink/85">
 						<strong className="font-display italic text-primary">
 							Sendo honestos:
@@ -467,7 +467,7 @@ function Qualification() {
 					<Eyebrow tone="light">Transparência primeiro</Eyebrow>
 					<h2 className="max-w-3xl text-3xl font-bold tracking-tight sm:text-4xl">
 						O consórcio{" "}
-						<em className="font-display font-medium italic text-accent">
+						<em className="font-display font-medium italic text-secondary">
 							não é para todo mundo.
 						</em>{" "}
 						E a gente prefere te dizer agora.
@@ -480,7 +480,7 @@ function Qualification() {
 							<ul className="mt-5 space-y-4">
 								{FITS.map((item) => (
 									<li key={item} className="flex gap-3 text-surface/85">
-										<span aria-hidden className="mt-0.5 font-bold text-accent">
+										<span aria-hidden className="mt-0.5 font-bold text-secondary">
 											✓
 										</span>
 										{item}
@@ -552,8 +552,8 @@ function Method() {
 					<ol className="mt-10 space-y-8">
 						{METHOD.map((stage, index) => (
 							<Reveal key={stage.stage} delay={index * 140}>
-								<li className="border-l-2 border-accent/40 pl-6">
-									<p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">
+								<li className="border-l-2 border-secondary/40 pl-6">
+									<p className="text-xs font-semibold uppercase tracking-[0.2em] text-secondary">
 										{stage.stage}
 									</p>
 									<h3 className="mt-2 text-xl font-bold">{stage.title}</h3>
@@ -603,7 +603,7 @@ function FinalCta() {
 						<Eyebrow tone="light">Simulação gratuita</Eyebrow>
 						<h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
 							Descubra em 2 minutos se o consórcio é o caminho{" "}
-							<em className="font-display font-medium italic text-accent">
+							<em className="font-display font-medium italic text-secondary">
 								para o seu caso
 							</em>
 						</h2>
@@ -631,7 +631,7 @@ function Footer() {
 				<p>
 					© 2026{" "}
 					<span className="font-display text-base text-surface">
-						Marko<span className="text-accent">.</span>
+						Marko<span className="text-secondary">.</span>
 					</span>{" "}
 					— Consultoria de aquisição de patrimônio
 				</p>

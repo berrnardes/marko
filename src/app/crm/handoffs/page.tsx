@@ -46,7 +46,7 @@ export default function HandoffsPage() {
 
 			{leads && leads.length > 0 ? (
 				<div className="grid gap-5 lg:grid-cols-[18rem_1fr]">
-					<ul className="flex flex-col gap-1 rounded-lg border border-ink/10 bg-surface-card p-2 shadow-sm">
+					<ul className="flex h-fit flex-col gap-1 rounded-xl bg-card p-2 ring-1 ring-foreground/10">
 						{leads.map((lead) => (
 							<li key={lead.id}>
 								<button
@@ -55,7 +55,7 @@ export default function HandoffsPage() {
 									className={`flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors ${
 										lead.id === selected?.id
 											? "bg-primary/10 text-primary"
-											: "hover:bg-surface/60"
+											: "hover:bg-muted"
 									}`}
 								>
 									<span className="font-medium">{lead.phoneE164}</span>
