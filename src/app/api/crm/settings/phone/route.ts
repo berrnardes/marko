@@ -31,6 +31,15 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 					{ error: "Número de telefone inválido. Use DDD + número." },
 					{ status: 400 },
 				);
+			case "system_number":
+				return NextResponse.json(
+					{
+						error:
+							"Este é um número do sistema, usado para enviar mensagens aos " +
+							"leads. Informe o seu número pessoal para receber os alertas.",
+					},
+					{ status: 409 },
+				);
 			case "no_sending_number":
 				return NextResponse.json(
 					{

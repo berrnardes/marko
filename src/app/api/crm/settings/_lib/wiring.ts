@@ -53,6 +53,8 @@ export function settingsWiring(): SettingsWiring {
 		consultants,
 		waha,
 		resolveFromNumberId,
+		listSystemNumbers: async () =>
+			(await numbers.listAll()).map((n) => n.msisdn),
 		clock: { now: () => new Date() },
 	});
 	return { consultants, verifications, waha, verification, resolveFromNumberId };

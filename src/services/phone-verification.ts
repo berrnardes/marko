@@ -15,7 +15,7 @@
 
 import { createHash, randomInt } from "node:crypto";
 
-import { normalizePhone } from "@/core/phone";
+import { brazilianPhoneVariants, normalizePhone } from "@/core/phone";
 import type { Clock } from "@/core/types";
 import { logger } from "@/logger";
 import type {
@@ -43,6 +43,13 @@ export interface PhoneVerificationServiceConfig {
 	 * means nothing can send and `start` fails without persisting.
 	 */
 	resolveFromNumberId: () => Promise<string | undefined>;
+	/**
+	 * The msisdns of every registered sending number (blocked ones included).
+	 * A consultant may never use one as their alert phone: the code would be
+	 * sent from the number to itself, and alerts to a bot number would flow
+	 * back through the inbound webhook as if a lead had replied.
+	 */
+	listSystemNumbers: () => Promise<string[]>;
 	clock: Clock;
 	codeTtlMs?: number;
 	maxAttempts?: number;
@@ -51,7 +58,14 @@ export interface PhoneVerificationServiceConfig {
 /** Outcome of {@link PhoneVerificationService.start}. */
 export type StartVerificationResult =
 	| { ok: true; phoneE164: string; expiresAt: Date }
-	| { ok: false; reason: "invalid_phone" | "no_sending_number" | "send_failed" };
+	| {
+			ok: false;
+			reason:
+				| "invalid_phone"
+				| "system_number"
+				| "no_sending_number"
+				| "send_failed";
+	  };
 
 /** Outcome of {@link PhoneVerificationService.confirm}. */
 export type ConfirmVerificationResult =
@@ -94,6 +108,7 @@ export function createPhoneVerificationService(
 		consultants,
 		waha,
 		resolveFromNumberId,
+		listSystemNumbers,
 		clock,
 		codeTtlMs = DEFAULT_CODE_TTL_MS,
 		maxAttempts = DEFAULT_MAX_ATTEMPTS,
@@ -104,6 +119,14 @@ export function createPhoneVerificationService(
 			const phoneE164 = normalizePhone(rawPhone, "BR");
 			if (phoneE164 === null) {
 				return { ok: false, reason: "invalid_phone" };
+			}
+			// A system sending number is never a valid alert phone. Compare across
+			// the 9th-digit variants (Req 1.4): the WAHA-derived msisdn may carry
+			// the legacy short form of the same mobile number.
+			const inputVariants = new Set(brazilianPhoneVariants(phoneE164));
+			const systemNumbers = await listSystemNumbers();
+			if (systemNumbers.some((msisdn) => inputVariants.has(msisdn))) {
+				return { ok: false, reason: "system_number" };
 			}
 			// Resolve the sending number before mutating anything, so "no number
 			// connected yet" fails cleanly without a half-started verification.

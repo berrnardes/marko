@@ -74,6 +74,7 @@ function makeService(
 		consultants,
 		waha,
 		resolveFromNumberId: async () => "num-1",
+		listSystemNumbers: async () => [],
 		clock,
 		...overrides,
 	});
@@ -111,6 +112,29 @@ describe("PhoneVerificationService.start", () => {
 		expect(consultants.setPhone).not.toHaveBeenCalled();
 		expect(verifications.rows.size).toBe(0);
 		expect(waha.sendText).not.toHaveBeenCalled();
+	});
+
+	it("rejects a system sending number without mutating anything", async () => {
+		const { service, verifications, consultants, waha } = makeService({
+			listSystemNumbers: async () => ["+5547996334573"],
+		});
+
+		const result = await service.start(USER_ID, "(47) 99633-4573");
+
+		expect(result).toEqual({ ok: false, reason: "system_number" });
+		expect(consultants.setPhone).not.toHaveBeenCalled();
+		expect(verifications.rows.size).toBe(0);
+		expect(waha.sendText).not.toHaveBeenCalled();
+	});
+
+	it("rejects a system number stored in the legacy 9th-digit-less form", async () => {
+		const { service } = makeService({
+			listSystemNumbers: async () => ["+554796334573"],
+		});
+
+		const result = await service.start(USER_ID, "47996334573");
+
+		expect(result).toEqual({ ok: false, reason: "system_number" });
 	});
 
 	it("fails cleanly when no sending number is registered", async () => {
