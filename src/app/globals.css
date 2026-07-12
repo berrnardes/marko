@@ -20,7 +20,6 @@
 	--color-surface-card: #ffffff;
 
 	--font-sans: var(--font-hanken), ui-sans-serif, system-ui, sans-serif;
-	--font-display: var(--font-fraunces), ui-serif, Georgia, serif;
 }
 
 /* Starfield drift used on the landing hero. The layer translates by exactly
