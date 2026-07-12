@@ -24,34 +24,39 @@
 // Req 18.2 ("a blocked number SHALL NOT send outbound messages") is honored at
 // the transport boundary as a defense-in-depth guard rather than the sole gate.
 
+import { logger } from "@/logger";
+
 import type { NumberRepository } from "./repositories";
 
 /**
  * The outbound integration boundary to the WAHA REST API. Mirrors the design's
- * `WAHA_Client` interface exactly. Every method takes a domain `numberId`
- * (mapped internally to a WAHA `session` via the injected resolver) except
- * {@link WahaClient.resolveChatId}, which maps an E.164 number to the canonical
- * WhatsApp `chatId`.
+ * `WAHA_Client` interface exactly. Every method takes a domain `numberId`,
+ * mapped internally to a WAHA `session` via the injected resolver — including
+ * chat-id resolution, which runs its existence check through the session of
+ * the number that will do the sending (sessions are per-org, so there is no
+ * global session to resolve through).
  */
 export interface WahaClient {
 	/**
 	 * Resolve an E.164 number to its canonical WhatsApp `chatId`, handling the
 	 * Brazilian pre-2012 9th-digit ambiguity and caching the result per number
-	 * so repeated calls for the same E.164 do not re-hit WAHA.
+	 * so repeated calls for the same E.164 do not re-hit WAHA. The check runs
+	 * through `numberId`'s session.
 	 */
-	resolveChatId(e164: string): Promise<string>;
+	resolveChatId(numberId: string, e164: string): Promise<string>;
 	/**
 	 * Resolve an E.164 number to a send target, distinguishing a number WAHA
 	 * confirms does NOT exist on WhatsApp (`{ reachable: false }`) from one that
 	 * exists or cannot be checked (`{ reachable: true, chatId }`). Used by the
 	 * outbound choke point to gate the send: an unreachable number is dropped
-	 * (and the lead marked unreachable) rather than sent into the void.
+	 * (and the lead marked unreachable) rather than sent into the void. The
+	 * check runs through `numberId`'s session — the number about to send.
 	 *
-	 * Only Brazilian mobile candidates with a configured resolution session are
-	 * checked; any other number, or any check failure, resolves as `reachable`
-	 * with the naive chat id so a transient problem never blocks a send.
+	 * Only Brazilian mobile candidates are checked; any other number, or any
+	 * check failure, resolves as `reachable` with the naive chat id so a
+	 * transient problem never blocks a send.
 	 */
-	resolveSendTarget(e164: string): Promise<SendTarget>;
+	resolveSendTarget(numberId: string, e164: string): Promise<SendTarget>;
 	/**
 	 * Send an outbound text message and return its WAHA message id (Req 17.2
 	 * path). Refuses to send from a number whose block flag is set (Req 18.2).
@@ -137,14 +142,6 @@ export interface WahaClientConfig {
 	 * fake in tests. Throws at construction if neither is available.
 	 */
 	fetch?: FetchLike;
-	/**
-	 * WAHA session used by {@link WahaClient.resolveChatId} to call the
-	 * "check phone number exists" endpoint. The interface signature carries no
-	 * `numberId`, so a session is configured here. When omitted, chat-id
-	 * resolution falls back to naive `<digits>@c.us` concatenation without the
-	 * existence check.
-	 */
-	resolutionSession?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -274,7 +271,6 @@ export class HttpWahaClient implements WahaClient {
 	private readonly apiKey?: string;
 	private readonly fetchImpl: FetchLike;
 	private readonly resolveNumber: NumberSessionResolver;
-	private readonly resolutionSession?: string;
 	/**
 	 * Per-E.164 canonical `chatId` cache. Stores the in-flight promise so
 	 * concurrent calls for the same number share one lookup; a rejected lookup
@@ -293,20 +289,23 @@ export class HttpWahaClient implements WahaClient {
 		this.apiKey = config.apiKey;
 		this.fetchImpl = fetchImpl;
 		this.resolveNumber = config.resolveNumber;
-		this.resolutionSession = config.resolutionSession;
 	}
 
 	/** @inheritdoc */
-	async resolveChatId(e164: string): Promise<string> {
+	async resolveChatId(numberId: string, e164: string): Promise<string> {
+		// Cache keyed by e164 alone: the canonical chatId is a property of the
+		// target number, not of the session used to look it up.
 		const cached = this.chatIdCache.get(e164);
 		if (cached) {
 			return cached;
 		}
-		const pending = this.resolveChatIdUncached(e164).catch((err: unknown) => {
-			// Do not poison the cache on failure: evict so a later call can retry.
-			this.chatIdCache.delete(e164);
-			throw err;
-		});
+		const pending = this.resolveChatIdUncached(numberId, e164).catch(
+			(err: unknown) => {
+				// Do not poison the cache on failure: evict so a later call can retry.
+				this.chatIdCache.delete(e164);
+				throw err;
+			},
+		);
 		this.chatIdCache.set(e164, pending);
 		return pending;
 	}
@@ -393,16 +392,19 @@ export class HttpWahaClient implements WahaClient {
 	}
 
 	/** @inheritdoc */
-	async resolveSendTarget(e164: string): Promise<SendTarget> {
-		return this.resolveTargetUncached(e164);
+	async resolveSendTarget(numberId: string, e164: string): Promise<SendTarget> {
+		return this.resolveTargetUncached(numberId, e164);
 	}
 
 	/** Resolve a canonical `chatId` without consulting the cache. */
-	private async resolveChatIdUncached(e164: string): Promise<string> {
+	private async resolveChatIdUncached(
+		numberId: string,
+		e164: string,
+	): Promise<string> {
 		// The chat-id path never reports unreachability (callers such as the
 		// inbound read-receipt path have already received a message FROM the
 		// number, so it exists): collapse a `not_found` result to the naive form.
-		const target = await this.resolveTargetUncached(e164);
+		const target = await this.resolveTargetUncached(numberId, e164);
 		return target.reachable ? target.chatId : `${e164.replace(/\D+/g, "")}@c.us`;
 	}
 
@@ -411,13 +413,17 @@ export class HttpWahaClient implements WahaClient {
 	 * confirms does NOT exist on WhatsApp (`{ reachable: false }`) from one that
 	 * exists or cannot be checked (`{ reachable: true, chatId }`).
 	 *
-	 * The existence check only runs for Brazilian mobile candidates with a
-	 * configured `resolutionSession`; everything else — and any check failure or
-	 * malformed response — falls back to the naive `<digits>@c.us` form as
-	 * `reachable`, so a transient WAHA problem never blocks a send (best-effort).
-	 * Only an explicit `numberExists: false` yields `{ reachable: false }`.
+	 * The existence check only runs for Brazilian mobile candidates, through the
+	 * session of `numberId` (the number that will send); any other number — and
+	 * any check failure or malformed response — falls back to the naive
+	 * `<digits>@c.us` form as `reachable`, so a transient WAHA problem never
+	 * blocks a send (best-effort). Only an explicit `numberExists: false` yields
+	 * `{ reachable: false }`.
 	 */
-	private async resolveTargetUncached(e164: string): Promise<SendTarget> {
+	private async resolveTargetUncached(
+		numberId: string,
+		e164: string,
+	): Promise<SendTarget> {
 		const digits = e164.replace(/\D+/g, "");
 		if (digits.length === 0) {
 			throw new WahaError(
@@ -427,12 +433,13 @@ export class HttpWahaClient implements WahaClient {
 		const naive = `${digits}@c.us`;
 		// Only Brazilian mobile numbers carry the pre-2012 9th-digit ambiguity
 		// that the existence check disambiguates; everything else uses the naive
-		// form. The check also needs a configured resolution session.
-		if (!this.resolutionSession || !isBrazilianMobileCandidate(digits)) {
+		// form.
+		if (!isBrazilianMobileCandidate(digits)) {
 			return { reachable: true, chatId: naive };
 		}
 		try {
-			const check = await this.checkPhoneExists(digits, this.resolutionSession);
+			const { session } = await this.resolveNumber(numberId);
+			const check = await this.checkPhoneExists(digits, session);
 			switch (check.kind) {
 				case "exists":
 					return { reachable: true, chatId: check.chatId };
@@ -441,8 +448,14 @@ export class HttpWahaClient implements WahaClient {
 				case "unknown":
 					return { reachable: true, chatId: naive };
 			}
-		} catch {
-			// Best-effort: never block a send because the existence check failed.
+		} catch (err) {
+			// Best-effort: never block a send because the existence check failed —
+			// but a naive chatId can be the wrong JID for a pre-2012 BR mobile
+			// (WEBJS then fails with "No LID for user"), so make the fallback loud.
+			logger.warn(
+				{ event: "waha.check_exists_failed", numberId, err },
+				"existence check failed; falling back to naive chatId",
+			);
 			return { reachable: true, chatId: naive };
 		}
 	}

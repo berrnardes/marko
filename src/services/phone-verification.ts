@@ -146,7 +146,7 @@ export function createPhoneVerificationService(
 			});
 
 			try {
-				const chatId = await waha.resolveChatId(phoneE164);
+				const chatId = await waha.resolveChatId(fromNumberId, phoneE164);
 				await waha.sendText(fromNumberId, chatId, buildVerificationText(code));
 			} catch (err) {
 				// The code never reached the phone — drop it so the user retries

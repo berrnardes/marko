@@ -46,7 +46,9 @@ function leadSnapshot(): LeadSnapshot {
 /** Build a notifier over fakes, overridable per test. */
 function makeNotifier(overrides: Partial<WahaHandoffNotifierConfig> = {}) {
 	const waha = {
-		resolveChatId: vi.fn(async (e164: string) => `${e164.slice(1)}@c.us`),
+		resolveChatId: vi.fn(
+			async (_numberId: string, e164: string) => `${e164.slice(1)}@c.us`,
+		),
 		sendText: vi.fn(async () => ({ waMessageId: "wa-msg-1" })),
 	};
 	const config: WahaHandoffNotifierConfig = {

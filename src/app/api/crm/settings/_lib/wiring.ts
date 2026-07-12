@@ -38,7 +38,6 @@ export function settingsWiring(): SettingsWiring {
 		baseUrl: process.env.WAHA_BASE_URL ?? "http://localhost:3000",
 		apiKey: process.env.WAHA_API_KEY,
 		resolveNumber: numberSessionResolverFromRepository(numbers),
-		resolutionSession: process.env.WAHA_SESSION,
 	});
 	const resolveFromNumberId = async (): Promise<string | undefined> => {
 		const available = await numbers.listAvailable();

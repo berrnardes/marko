@@ -278,7 +278,7 @@ export class InboundHandlerService implements InboundHandler {
 			return;
 		}
 		try {
-			const chatId = await this.waha.resolveChatId(msg.from);
+			const chatId = await this.waha.resolveChatId(msg.numberId, msg.from);
 			await this.waha.sendSeen(msg.numberId, chatId, [msg.waMessageId]);
 		} catch {
 			// Swallow: the receipt is non-essential (Req 17.3 is a courtesy ack).

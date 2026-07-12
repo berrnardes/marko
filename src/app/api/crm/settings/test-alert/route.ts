@@ -74,7 +74,7 @@ export async function POST(): Promise<NextResponse> {
 	// so a link would 404.
 	const text = `[TESTE — alerta de exemplo]\n\n${buildHandoffNotificationText(sampleLead(new Date()), "replied")}`;
 	try {
-		const chatId = await waha.resolveChatId(settings.phoneE164);
+		const chatId = await waha.resolveChatId(fromNumberId, settings.phoneE164);
 		await waha.sendText(fromNumberId, chatId, text);
 	} catch (err) {
 		logger.error(

@@ -400,7 +400,10 @@ export class OutboundWorkerService implements OutboundWorker {
 		// `dropped_unreachable` — the caller marks the lead unreachable and cancels
 		// its outreach, and the daily cap is never touched (no send occurs). Any
 		// other case (existing, non-checkable, or a check failure) is reachable.
-		const target = await this.waha.resolveSendTarget(freshLead.phoneE164);
+		const target = await this.waha.resolveSendTarget(
+			numberId,
+			freshLead.phoneE164,
+		);
 		if (!target.reachable) {
 			return { status: "dropped_unreachable", leadId };
 		}

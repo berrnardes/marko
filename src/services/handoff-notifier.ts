@@ -158,7 +158,7 @@ export class WahaHandoffNotifier implements HandoffNotifier {
 		const text = buildHandoffNotificationText(lead, reason, this.crmBaseUrl);
 		for (const recipient of recipients) {
 			try {
-				const chatId = await this.waha.resolveChatId(recipient);
+				const chatId = await this.waha.resolveChatId(fromNumberId, recipient);
 				await this.waha.sendText(fromNumberId, chatId, text);
 				logger.info(
 					{ event: "handoff.notified", leadId, reason },

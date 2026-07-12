@@ -435,7 +435,6 @@ export function getRuntime(): Promise<Runtime> {
 				baseUrl: process.env.WAHA_BASE_URL ?? "http://localhost:3000",
 				apiKey: process.env.WAHA_API_KEY,
 				resolveNumber: numberSessionResolverFromRepository(numbers),
-				resolutionSession: process.env.WAHA_SESSION,
 			});
 			// Best-effort consultant alert on handoff. Recipients are resolved at
 			// notify time from org membership (verified phone + alerts on), with the

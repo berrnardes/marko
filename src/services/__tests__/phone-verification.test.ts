@@ -65,7 +65,9 @@ function makeService(
 		stampPhoneVerified: vi.fn(async () => true),
 	};
 	const waha = {
-		resolveChatId: vi.fn(async (e164: string) => `${e164.slice(1)}@c.us`),
+		resolveChatId: vi.fn(
+			async (_numberId: string, e164: string) => `${e164.slice(1)}@c.us`,
+		),
 		sendText: vi.fn(async () => ({ waMessageId: "wa-1" })),
 	};
 	const clock: Clock = { now: () => NOW };
