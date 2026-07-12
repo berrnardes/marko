@@ -9,10 +9,11 @@
  *
  * The shadcn/ui semantic variables (`:root` below) carry the brand palette:
  * near-black primary (#212121), deep-green secondary (#004741), and the warm
- * off-white surface (#f0eee9) as the page background. Product UI (CRM, auth)
- * uses the shadcn tokens — `bg-background`, `bg-card`, `text-muted-foreground`,
- * `border-border`. The extra `ink` / `surface` / `surface-card` aliases keep
- * the landing page's utilities working unchanged.
+ * off-white surface (#f0eee9) as the page background. The landing page uses
+ * that mapping directly; inside the CRM shell the `.app-theme` overrides swap
+ * the roles so the green is `primary` (the action color) and add the
+ * `--status-*` lead-temperature ramp. The extra `ink` / `surface` /
+ * `surface-card` aliases keep the landing page's utilities working unchanged.
  *
  * `@theme inline` keeps the font tokens pointing at the `next/font` CSS
  * variable wired up in the root layout (`--font-hanken`) rather than resolving
@@ -39,6 +40,10 @@
 	--color-chart-3: var(--chart-3);
 	--color-chart-2: var(--chart-2);
 	--color-chart-1: var(--chart-1);
+	--color-status-hot: var(--status-hot);
+	--color-status-warm: var(--status-warm);
+	--color-status-info: var(--status-info);
+	--color-status-nurture: var(--status-nurture);
 	--color-ring: var(--ring);
 	--color-input: var(--input);
 	--color-border: var(--border);
@@ -86,11 +91,34 @@ html {
 	color-scheme: light;
 }
 
-.crm-theme {
+/*
+ * Product token overrides (light), applied to the CRM shell and the auth
+ * pages. Inside `.app-theme` the brand green is `primary` (buttons, links,
+ * active states, focus) and `secondary` drops to a quiet neutral fill — the
+ * landing page keeps the original `:root` mapping.
+ * The `--status-*` ramp carries lead-temperature semantics: hot/warm are warm
+ * hues, engaged states are blue, nurture is violet; terminal states reuse the
+ * muted grays.
+ */
+.app-theme {
 	color-scheme: light;
+	--primary: #004741;
+	--primary-foreground: #ffffff;
+	--secondary: #e6e3da;
+	--secondary-foreground: #212121;
+	--status-hot: #c2410c;
+	--status-warm: #b45309;
+	--status-info: #2563eb;
+	--status-nurture: #7c3aed;
 }
 
-.crm-theme.dark {
+/*
+ * Dark palette. next-themes applies `.dark` to <html>, so `.app-theme` sits
+ * below it as a descendant — hence the `.dark .app-theme` selector (not
+ * `.app-theme.dark`). The provider is mounted only on the product surface, so
+ * the public landing page (no `.app-theme`) never darkens.
+ */
+.dark .app-theme {
 	color-scheme: dark;
 	--background: #121310;
 	--foreground: #f3f1eb;
@@ -98,10 +126,14 @@ html {
 	--card-foreground: #f3f1eb;
 	--popover: #1b1d18;
 	--popover-foreground: #f3f1eb;
-	--primary: #f3f1eb;
-	--primary-foreground: #121310;
-	--secondary: #4fb7a5;
-	--secondary-foreground: #071412;
+	--primary: #4fb7a5;
+	--primary-foreground: #071412;
+	--secondary: #292b25;
+	--secondary-foreground: #f3f1eb;
+	--status-hot: #fb923c;
+	--status-warm: #fbbf24;
+	--status-info: #60a5fa;
+	--status-nurture: #a78bfa;
 	--muted: #292b25;
 	--muted-foreground: #b6b1a7;
 	--accent: #2f342d;

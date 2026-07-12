@@ -15,6 +15,7 @@ import {
 	type UseMutationResult,
 	type UseQueryResult,
 } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import type {
 	HandoffLeadView,
@@ -139,9 +140,13 @@ export function useImportCsv(): UseMutationResult<
 			const data = (await response.json()) as { report: ImportReportView };
 			return data.report;
 		},
-		onSuccess: () => {
+		onSuccess: (report) => {
 			void queryClient.invalidateQueries({ queryKey: crmKeys.leads });
+			toast.success("Importação concluída", {
+				description: `${report.createdCount} criados · ${report.updatedCount} atualizados · ${report.rejectedCount} rejeitados`,
+			});
 		},
+		onError: (error) => toast.error(error.message),
 	});
 }
 
@@ -225,9 +230,13 @@ export function useToggleNumberBlock(): UseMutationResult<
 				);
 			}
 		},
-		onSuccess: () => {
+		onSuccess: (_data, variables) => {
 			void queryClient.invalidateQueries({ queryKey: crmKeys.numbers });
+			toast.success(
+				variables.blocked ? "Número bloqueado" : "Número desbloqueado",
+			);
 		},
+		onError: (error) => toast.error(error.message),
 	});
 }
 
@@ -311,6 +320,7 @@ export function useConfirmSession(): UseMutationResult<
 		},
 		onSuccess: () => {
 			void queryClient.invalidateQueries({ queryKey: crmKeys.numbers });
+			toast.success("Número conectado");
 		},
 	});
 }
@@ -350,7 +360,9 @@ export function useDeleteNumber(): UseMutationResult<void, Error, string> {
 		},
 		onSuccess: () => {
 			void queryClient.invalidateQueries({ queryKey: crmKeys.numbers });
+			toast.success("Número removido");
 		},
+		onError: (error) => toast.error(error.message),
 	});
 }
 
@@ -387,7 +399,11 @@ export function useSetAlertPhone(): UseMutationResult<
 			),
 		onSuccess: () => {
 			void queryClient.invalidateQueries({ queryKey: crmKeys.settings });
+			toast.success("Código enviado", {
+				description: "Confira o WhatsApp e digite o código de 6 dígitos.",
+			});
 		},
+		onError: (error) => toast.error(error.message),
 	});
 }
 
@@ -407,7 +423,9 @@ export function useVerifyAlertPhone(): UseMutationResult<
 			),
 		onSuccess: () => {
 			void queryClient.invalidateQueries({ queryKey: crmKeys.settings });
+			toast.success("WhatsApp verificado");
 		},
+		onError: (error) => toast.error(error.message),
 	});
 }
 
@@ -423,9 +441,13 @@ export function useToggleHandoffAlerts(): UseMutationResult<
 			sendJson<{ ok: true }>("/api/crm/settings/notifications", "PATCH", {
 				receivesHandoffAlerts,
 			}),
-		onSuccess: () => {
+		onSuccess: (_data, receivesHandoffAlerts) => {
 			void queryClient.invalidateQueries({ queryKey: crmKeys.settings });
+			toast.success(
+				receivesHandoffAlerts ? "Alertas ativados" : "Alertas desativados",
+			);
 		},
+		onError: (error) => toast.error(error.message),
 	});
 }
 
@@ -438,6 +460,11 @@ export function useSendTestAlert(): UseMutationResult<
 	return useMutation({
 		mutationFn: () =>
 			sendJson<{ ok: true }>("/api/crm/settings/test-alert", "POST"),
+		onSuccess: () =>
+			toast.success("Alerta de teste enviado", {
+				description: "Confira o seu WhatsApp.",
+			}),
+		onError: (error) => toast.error(error.message),
 	});
 }
 
@@ -481,7 +508,9 @@ export function useSaveTemplate(): UseMutationResult<
 		},
 		onSuccess: () => {
 			void queryClient.invalidateQueries({ queryKey: crmKeys.templates });
+			toast.success("Modelo salvo");
 		},
+		onError: (error) => toast.error(error.message),
 	});
 }
 
@@ -511,6 +540,8 @@ export function useResetTemplate(): UseMutationResult<
 		},
 		onSuccess: () => {
 			void queryClient.invalidateQueries({ queryKey: crmKeys.templates });
+			toast.success("Modelo restaurado para o padrão");
 		},
+		onError: (error) => toast.error(error.message),
 	});
 }

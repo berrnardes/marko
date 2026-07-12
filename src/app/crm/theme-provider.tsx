@@ -1,106 +1,61 @@
-// CRM_UI theme provider.
+// CRM_UI theme shell.
 //
-// Side-effect boundary: client component. Keeps the CRM visual mode scoped to
-// /crm, persists the browser preference locally, and exposes a small hook for
-// the settings page control.
+// Side-effect boundary: client component. Scopes light/dark theming to the
+// product surface with next-themes — which persists the choice and applies the
+// `.dark` class to <html> before hydration, so dark-mode operators never see a
+// flash of light — renders the `.app-theme` token wrapper, and mounts the toast
+// host. Mounting the provider only here (not at the root) keeps the public
+// landing page unthemed: it never receives `.dark`, so it stays light.
 
 "use client";
 
-import {
-	createContext,
-	useContext,
-	useMemo,
-	useSyncExternalStore,
-} from "react";
+import { ThemeProvider, useTheme } from "next-themes";
 
+import { Toaster } from "@/components/ui/sonner";
+
+/** Storage key kept from the previous provider so saved preferences carry over. */
 const CRM_THEME_STORAGE_KEY = "marko.crm.theme";
-
-type CrmTheme = "light" | "dark";
-
-type CrmThemeContextValue = {
-	theme: CrmTheme;
-	isDark: boolean;
-	setTheme: (theme: CrmTheme) => void;
-	toggleTheme: () => void;
-};
-
-const CrmThemeContext = createContext<CrmThemeContextValue | null>(null);
-
-const themeListeners = new Set<() => void>();
-
-function readStoredTheme(): CrmTheme {
-	if (typeof window === "undefined") {
-		return "light";
-	}
-
-	return window.localStorage.getItem(CRM_THEME_STORAGE_KEY) === "dark"
-		? "dark"
-		: "light";
-}
-
-function subscribeToTheme(listener: () => void) {
-	themeListeners.add(listener);
-
-	function handleStorage(event: StorageEvent) {
-		if (event.key === CRM_THEME_STORAGE_KEY) {
-			listener();
-		}
-	}
-
-	window.addEventListener("storage", handleStorage);
-
-	return () => {
-		themeListeners.delete(listener);
-		window.removeEventListener("storage", handleStorage);
-	};
-}
-
-function getServerThemeSnapshot(): CrmTheme {
-	return "light";
-}
 
 export function CrmThemeProvider({
 	children,
 }: Readonly<{ children: React.ReactNode }>) {
-	const theme = useSyncExternalStore(
-		subscribeToTheme,
-		readStoredTheme,
-		getServerThemeSnapshot,
-	);
-
-	function setTheme(nextTheme: CrmTheme) {
-		window.localStorage.setItem(CRM_THEME_STORAGE_KEY, nextTheme);
-		themeListeners.forEach((listener) => listener());
-	}
-
-	const value = useMemo<CrmThemeContextValue>(
-		() => ({
-			theme,
-			isDark: theme === "dark",
-			setTheme,
-			toggleTheme: () => setTheme(theme === "dark" ? "light" : "dark"),
-		}),
-		[theme],
-	);
-
 	return (
-		<div
-			className={`crm-theme min-h-screen bg-background text-foreground transition-colors ${
-				theme === "dark" ? "dark" : ""
-			}`}
+		<ThemeProvider
+			attribute="class"
+			defaultTheme="light"
+			enableSystem={false}
+			disableTransitionOnChange
+			storageKey={CRM_THEME_STORAGE_KEY}
 		>
-			<CrmThemeContext.Provider value={value}>
+			<div className="app-theme min-h-screen bg-background text-foreground">
 				{children}
-			</CrmThemeContext.Provider>
-		</div>
+			</div>
+			<CrmToaster />
+		</ThemeProvider>
 	);
 }
 
-export function useCrmTheme() {
-	const context = useContext(CrmThemeContext);
-	if (!context) {
-		throw new Error("useCrmTheme must be used within CrmThemeProvider");
-	}
+/** Toast host, themed to follow the current CRM light/dark mode. */
+function CrmToaster() {
+	const { resolvedTheme } = useTheme();
+	return (
+		<Toaster
+			theme={resolvedTheme === "dark" ? "dark" : "light"}
+			position="top-right"
+			closeButton
+		/>
+	);
+}
 
-	return context;
+/**
+ * Light/dark control for the settings page. Delegates to next-themes so the
+ * toggle stays in sync with the persisted, flash-free theme applied to <html>.
+ */
+export function useCrmTheme() {
+	const { resolvedTheme, setTheme } = useTheme();
+	const isDark = resolvedTheme === "dark";
+	return {
+		isDark,
+		toggleTheme: () => setTheme(isDark ? "light" : "dark"),
+	};
 }

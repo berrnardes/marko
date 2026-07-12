@@ -26,10 +26,12 @@ export default async function CrmLayout({
 	return (
 		<CrmThemeProvider>
 			<CrmQueryProvider>
-				<div className="flex min-h-screen flex-col">
+				<div className="flex min-h-screen flex-col md:flex-row">
 					<CrmNav email={session.user.email ?? null} />
-					<main className="mx-auto w-full max-w-6xl flex-1 px-6 py-8">
-						{children}
+					<main className="min-w-0 flex-1">
+						<div className="mx-auto w-full max-w-6xl px-6 py-8">
+							{children}
+						</div>
 					</main>
 				</div>
 			</CrmQueryProvider>

@@ -27,7 +27,7 @@ import {
 	TableRow,
 } from "@/components/ui/table";
 
-import { PageHeader, StatusNote } from "../_components/ui";
+import { PageHeader } from "../_components/ui";
 import { useImportCsv } from "../_lib/api";
 import type { ImportReportView } from "../_lib/types";
 
@@ -43,9 +43,9 @@ function CountTile({
 }) {
 	const styles =
 		tone === "created"
-			? "bg-secondary/10 text-secondary"
+			? "bg-primary/10 text-primary"
 			: tone === "updated"
-				? "bg-primary/10 text-primary"
+				? "bg-status-info/10 text-status-info"
 				: "bg-destructive/10 text-destructive";
 	return (
 		<div className={`rounded-lg px-4 py-3 ${styles}`}>
@@ -78,7 +78,7 @@ function ReportRows({ report }: { report: ImportReportView }) {
 									className={
 										row.outcome === "rejected"
 											? "text-destructive"
-											: "text-secondary"
+											: "text-primary"
 									}
 								>
 									{row.outcome}
@@ -134,7 +134,6 @@ export default function ImportPage() {
 						<div>
 							<Button
 								type="submit"
-								variant="secondary"
 								disabled={!file || importCsv.isPending}
 							>
 								{importCsv.isPending ? "Importando…" : "Importar CSV"}
@@ -143,10 +142,6 @@ export default function ImportPage() {
 					</form>
 				</CardContent>
 			</Card>
-
-			{importCsv.isError ? (
-				<StatusNote tone="error">{importCsv.error.message}</StatusNote>
-			) : null}
 
 			{report ? (
 				<Card>

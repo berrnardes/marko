@@ -11,7 +11,6 @@ import { REGEXP_ONLY_DIGITS } from "input-otp";
 import { MoonIcon, SunIcon } from "lucide-react";
 import { useState } from "react";
 
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -40,19 +39,10 @@ import {
 import type { NotificationSettingsView } from "../_lib/types";
 import { useCrmTheme } from "../theme-provider";
 
-/** Inline error surface for a failed mutation. */
-function ErrorNote({ message }: { message: string }) {
-	return (
-		<Alert variant="destructive">
-			<AlertDescription>{message}</AlertDescription>
-		</Alert>
-	);
-}
-
 /** Small green/amber pill for the phone's verification state. */
 function VerificationBadge({ verified }: { verified: boolean }) {
 	return verified ? (
-		<Badge className="border-transparent bg-secondary/10 text-secondary">
+		<Badge className="border-transparent bg-primary/10 text-primary">
 			Verificado
 		</Badge>
 	) : (
@@ -120,7 +110,6 @@ function PhoneSection({ settings }: { settings: NotificationSettingsView }) {
 					Enviaremos um código de confirmação por WhatsApp. Só números
 					verificados recebem alertas.
 				</p>
-				{setPhone.isError ? <ErrorNote message={setPhone.error.message} /> : null}
 			</div>
 		);
 	}
@@ -167,8 +156,6 @@ function PhoneSection({ settings }: { settings: NotificationSettingsView }) {
 						Usar outro número
 					</Button>
 				</div>
-				{verify.isError ? <ErrorNote message={verify.error.message} /> : null}
-				{setPhone.isError ? <ErrorNote message={setPhone.error.message} /> : null}
 			</div>
 		);
 	}
@@ -197,17 +184,11 @@ function PhoneSection({ settings }: { settings: NotificationSettingsView }) {
 						size="sm"
 						disabled={testAlert.isPending}
 						onClick={() => testAlert.mutate()}
-						className="border-secondary/30 text-secondary hover:bg-secondary/5 hover:text-secondary"
 					>
 						{testAlert.isPending ? "Enviando…" : "Enviar alerta de teste"}
 					</Button>
 				) : null}
 			</div>
-			{testAlert.isSuccess ? (
-				<StatusNote>Alerta de teste enviado para o seu WhatsApp.</StatusNote>
-			) : null}
-			{testAlert.isError ? <ErrorNote message={testAlert.error.message} /> : null}
-			{setPhone.isError ? <ErrorNote message={setPhone.error.message} /> : null}
 		</div>
 	);
 }
@@ -234,7 +215,6 @@ function AlertToggle({ settings }: { settings: NotificationSettingsView }) {
 					verificar seu WhatsApp acima.
 				</p>
 			) : null}
-			{toggle.isError ? <ErrorNote message={toggle.error.message} /> : null}
 		</div>
 	);
 }

@@ -20,32 +20,58 @@ import {
 	AlertDialogTitle,
 	AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import type { ClassificationBand, LifecycleState } from "@/core/types";
 
 import { LIFECYCLE_LABELS } from "../_lib/format";
 
-/** Badge classes per lifecycle state, on the shadcn theme tokens (Req 20.1). */
-const LIFECYCLE_STYLES: Record<LifecycleState, string> = {
-	COLD_QUEUED: "border-border bg-transparent text-muted-foreground",
-	IN_CADENCE: "border-primary/20 bg-transparent text-primary",
-	REPLIED: "border-transparent bg-primary/10 text-primary",
-	QUALIFYING: "border-transparent bg-secondary/10 text-secondary",
-	HOT: "border-transparent bg-secondary text-secondary-foreground",
-	WARM: "border-transparent bg-secondary/80 text-secondary-foreground",
-	DISQUALIFIED: "border-transparent bg-muted text-muted-foreground",
-	CADENCE_EXHAUSTED: "border-transparent bg-muted text-muted-foreground",
-	MONTHLY_NURTURE: "border-transparent bg-primary/10 text-primary",
-	OPTED_OUT: "border-transparent bg-primary text-primary-foreground",
-};
+/**
+ * Dot + label tone per lifecycle state (Req 20.1). One temperature language
+ * across the CRM: hot/warm are warm hues, engaged states (replied, qualifying)
+ * are blue, the running cadence is the brand primary, nurture is violet, and
+ * queued/terminal states stay quiet gray — a hollow dot for "not started yet",
+ * a filled one for "finished".
+ */
+const LIFECYCLE_STYLES: Record<LifecycleState, { dot: string; text: string }> =
+	{
+		COLD_QUEUED: {
+			dot: "border border-muted-foreground/60 bg-transparent",
+			text: "text-muted-foreground",
+		},
+		IN_CADENCE: { dot: "bg-primary", text: "text-foreground" },
+		REPLIED: { dot: "bg-status-info", text: "text-foreground" },
+		QUALIFYING: { dot: "bg-status-info", text: "text-foreground" },
+		HOT: { dot: "bg-status-hot", text: "text-status-hot" },
+		WARM: { dot: "bg-status-warm", text: "text-status-warm" },
+		DISQUALIFIED: {
+			dot: "bg-muted-foreground/50",
+			text: "text-muted-foreground",
+		},
+		CADENCE_EXHAUSTED: {
+			dot: "bg-muted-foreground/50",
+			text: "text-muted-foreground",
+		},
+		MONTHLY_NURTURE: { dot: "bg-status-nurture", text: "text-foreground" },
+		OPTED_OUT: {
+			dot: "bg-muted-foreground/50",
+			text: "text-muted-foreground",
+		},
+	};
 
-/** A pill showing a lead's lifecycle state (Req 20.1). */
+/** A colored status dot + label for a lead's lifecycle state (Req 20.1). */
 export function LifecycleBadge({ state }: { state: LifecycleState }) {
+	const style = LIFECYCLE_STYLES[state];
 	return (
-		<Badge variant="outline" className={LIFECYCLE_STYLES[state]}>
+		<span
+			className={`inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-medium ${style.text}`}
+		>
+			<span
+				aria-hidden="true"
+				className={`size-1.5 shrink-0 rounded-full ${style.dot}`}
+			/>
 			{LIFECYCLE_LABELS[state]}
-		</Badge>
+		</span>
 	);
 }
 
@@ -59,11 +85,11 @@ export function ScoreBadge({
 }) {
 	const tint =
 		band === "HOT"
-			? "bg-secondary text-secondary-foreground"
+			? "bg-status-hot/15 text-status-hot"
 			: band === "WARM"
-				? "bg-secondary/80 text-secondary-foreground"
+				? "bg-status-warm/15 text-status-warm"
 				: band === "cold"
-					? "bg-primary/10 text-primary"
+					? "bg-status-info/10 text-status-info"
 					: "bg-muted text-muted-foreground";
 	return (
 		<span
@@ -74,23 +100,57 @@ export function ScoreBadge({
 	);
 }
 
-/** A page title block with an optional description. */
+/**
+ * A page title block with an optional description and an optional primary
+ * action (rendered top-right), so every page composes its main action the same
+ * way instead of floating it loosely above the content.
+ */
 export function PageHeader({
 	title,
 	description,
+	action,
 }: {
 	title: string;
 	description?: string;
+	action?: React.ReactNode;
 }) {
 	return (
-		<header className="mb-6">
-			<h1 className="font-heading text-2xl font-semibold text-foreground">
-				{title}
-			</h1>
-			{description ? (
-				<p className="mt-1 text-sm text-muted-foreground">{description}</p>
-			) : null}
+		<header className="mb-6 flex flex-wrap items-start justify-between gap-3">
+			<div>
+				<h1 className="font-heading text-2xl font-semibold text-foreground">
+					{title}
+				</h1>
+				{description ? (
+					<p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+						{description}
+					</p>
+				) : null}
+			</div>
+			{action ? <div className="shrink-0">{action}</div> : null}
 		</header>
+	);
+}
+
+/** A placeholder that mirrors the list table's shape while data loads. */
+export function TableSkeleton({
+	rows = 5,
+	columns = 5,
+}: {
+	rows?: number;
+	columns?: number;
+}) {
+	return (
+		<div className="overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
+			<div className="divide-y divide-border">
+				{Array.from({ length: rows }).map((_, rowIndex) => (
+					<div key={rowIndex} className="flex items-center gap-4 px-4 py-3.5">
+						{Array.from({ length: columns }).map((_, columnIndex) => (
+							<Skeleton key={columnIndex} className="h-4 flex-1" />
+						))}
+					</div>
+				))}
+			</div>
+		</div>
 	);
 }
 

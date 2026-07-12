@@ -18,7 +18,7 @@ export default async function SignupPage() {
 	}
 
 	return (
-		<main className="flex min-h-screen flex-col items-center justify-center gap-6 bg-su">
+		<main className="app-theme flex min-h-screen flex-col items-center justify-center gap-6 bg-background text-foreground">
 			<h1 className="text-xl font-semibold">Marko CRM</h1>
 			<SignupForm />
 			<p className="text-sm">

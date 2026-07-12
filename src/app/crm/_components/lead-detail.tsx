@@ -38,7 +38,9 @@ export function LeadHeader({ lead }: { lead: LeadDetailView }) {
 			<ScoreBadge score={lead.score} band={lead.classificationBand} />
 			<span className="text-sm text-muted-foreground">via {lead.source}</span>
 			{lead.optInStatus === "opt_out" ? (
-				<Badge>Optou por sair</Badge>
+				<Badge variant="outline" className="text-muted-foreground">
+					Optou por sair
+				</Badge>
 			) : null}
 			{lead.blocked ? <Badge variant="destructive">Bloqueado</Badge> : null}
 		</div>

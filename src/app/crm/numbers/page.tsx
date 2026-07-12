@@ -27,7 +27,12 @@ import {
 	TableRow,
 } from "@/components/ui/table";
 
-import { ConfirmButton, PageHeader, StatusNote } from "../_components/ui";
+import {
+	ConfirmButton,
+	PageHeader,
+	StatusNote,
+	TableSkeleton,
+} from "../_components/ui";
 import {
 	useCancelSession,
 	useConfirmSession,
@@ -159,18 +164,21 @@ export default function NumbersPage() {
 			<PageHeader
 				title="Números WhatsApp"
 				description="Gerencie os números usados para envio de mensagens. Conecte um novo número escaneando o QR code — a sessão e o número são registrados automaticamente."
+				action={
+					connecting ? null : (
+						<Button onClick={() => setConnecting(true)}>
+							Conectar novo número
+						</Button>
+					)
+				}
 			/>
 
 			{connecting ? (
 				<ConnectPanel onClose={() => setConnecting(false)} />
-			) : (
-				<Button className="mb-6" onClick={() => setConnecting(true)}>
-					Conectar novo número
-				</Button>
-			)}
+			) : null}
 
 			{/* State */}
-			{isPending ? <StatusNote>Carregando números…</StatusNote> : null}
+			{isPending ? <TableSkeleton columns={6} /> : null}
 			{isError ? <StatusNote tone="error">{error.message}</StatusNote> : null}
 
 			{numbers && numbers.length === 0 ? (
@@ -206,7 +214,7 @@ export default function NumbersPage() {
 										{num.blocked ? (
 											<Badge variant="destructive">Bloqueado</Badge>
 										) : (
-											<Badge className="border-transparent bg-secondary/10 text-secondary">
+											<Badge className="border-transparent bg-primary/10 text-primary">
 												Ativo
 											</Badge>
 										)}
