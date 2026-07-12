@@ -36,6 +36,7 @@ function snapshot(
 		id: "lead-1",
 		phoneE164: "+5547996334573",
 		source: "csv",
+		displayName: null,
 		lifecycleState: "QUALIFYING",
 		optInStatus: "opt_in",
 		optInAt: null,

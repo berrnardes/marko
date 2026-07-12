@@ -33,6 +33,7 @@ function toSnapshot(row: LeadRow): LeadSnapshot {
 		id: row.id,
 		phoneE164: row.phoneE164,
 		source: row.source,
+		displayName: row.displayName,
 		lifecycleState: row.lifecycleState,
 		optInStatus: row.optInStatus,
 		optInAt: row.optInAt,
@@ -93,10 +94,14 @@ export class DrizzleLeadRepository implements LeadRepository {
 	/** @inheritdoc */
 	async create(input: NewLeadInput): Promise<LeadSnapshot> {
 		// New leads start `COLD_QUEUED` (the column default) recording their
-		// originating source (Req 1.5, 2.1).
+		// originating source (Req 1.5, 2.1) and any name the source supplied.
 		const [row] = await this.database
 			.insert(leads)
-			.values({ phoneE164: input.phoneE164, source: input.source })
+			.values({
+				phoneE164: input.phoneE164,
+				source: input.source,
+				displayName: input.displayName ?? null,
+			})
 			.returning();
 		return toSnapshot(row);
 	}

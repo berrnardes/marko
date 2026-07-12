@@ -35,6 +35,8 @@ export type ScheduledJobStatus = "pending" | "done" | "cancelled" | "skipped";
 export interface NewLeadInput {
 	phoneE164: string;
 	source: string;
+	/** Optional lead name, when the source carries one (e.g. a CSV name column). */
+	displayName?: string | null;
 }
 
 /** A persisted message record in a Lead's history (Req 19.3). */

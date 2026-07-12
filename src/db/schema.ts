@@ -188,6 +188,12 @@ export const leads = pgTable(
 		phoneE164: text("phone_e164").notNull().unique(),
 		/** Originating source recorded on the lead (Req 2.1). */
 		source: text("source").notNull(),
+		/**
+		 * Optional lead name, captured from an import's name column when present.
+		 * Personalizes the `{nome}` greeting in cadence/nurture templates; `null`
+		 * (or blank) falls back to the name-less greeting (Req 4.1).
+		 */
+		displayName: text("display_name"),
 		lifecycleState: text("lifecycle_state")
 			.$type<LifecycleState>()
 			.notNull()

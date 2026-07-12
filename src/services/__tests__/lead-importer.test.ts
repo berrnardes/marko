@@ -32,6 +32,7 @@ function newSnapshot(id: string, input: NewLeadInput): LeadSnapshot {
 		id,
 		phoneE164: input.phoneE164,
 		source: input.source,
+		displayName: input.displayName ?? null,
 		lifecycleState: "COLD_QUEUED",
 		optInStatus: "opt_in",
 		optInAt: null,
@@ -134,10 +135,11 @@ describe("LeadImporter.import", () => {
 		const csv = "telefone\n(11) 98765-4321\n11912345678\n";
 		const report = await importer().import(buf(csv), "csv");
 
-		// Both numbers normalized to E.164 and created with the import source.
+		// Both numbers normalized to E.164 and created with the import source. No
+		// name column present, so no name is captured.
 		expect(leadRepo.creates).toEqual([
-			{ phoneE164: "+5511987654321", source: "csv" },
-			{ phoneE164: "+5511912345678", source: "csv" },
+			{ phoneE164: "+5511987654321", source: "csv", displayName: null },
+			{ phoneE164: "+5511912345678", source: "csv", displayName: null },
 		]);
 		// Each created Lead starts COLD_QUEUED.
 		for (const snapshot of leadRepo.byPhone.values()) {
@@ -162,7 +164,7 @@ describe("LeadImporter.import", () => {
 
 		// Only the one valid number created a Lead and enrolled.
 		expect(leadRepo.creates).toEqual([
-			{ phoneE164: "+5511987654321", source: "csv" },
+			{ phoneE164: "+5511987654321", source: "csv", displayName: null },
 		]);
 		expect(cadence.enrolled).toEqual(["lead-1"]);
 
@@ -234,23 +236,54 @@ describe("LeadImporter.import", () => {
 		const report = await importer().import(buf(csv), "landing-page");
 
 		expect(leadRepo.creates).toEqual([
-			{ phoneE164: "+5511987654321", source: "landing-page" },
-			{ phoneE164: "+554133221100", source: "landing-page" },
+			{ phoneE164: "+5511987654321", source: "landing-page", displayName: null },
+			{ phoneE164: "+554133221100", source: "landing-page", displayName: null },
 		]);
 		// No header, so the first data row is row 1.
 		expect(report.rows.map((r) => r.rowNumber)).toEqual([1, 2]);
 		expect(report.createdCount).toBe(2);
 	});
 
-	it("locates the phone column among other columns via the header alias", async () => {
+	it("locates the phone column among other columns via the header alias and captures the name", async () => {
 		const csv =
 			"nome,telefone,email\nMaria,(11) 98765-4321,maria@example.com\n";
 		const report = await importer().import(buf(csv), "csv");
 
 		expect(leadRepo.creates).toEqual([
-			{ phoneE164: "+5511987654321", source: "csv" },
+			{ phoneE164: "+5511987654321", source: "csv", displayName: "Maria" },
 		]);
 		expect(report.createdCount).toBe(1);
+	});
+
+	it("captures the lead name from a name column for each created lead (Req 4.1)", async () => {
+		const csv =
+			"nome,telefone\nJoão Silva,11987654321\nAna,4133221100\n,11912345678\n";
+		await importer().import(buf(csv), "csv");
+
+		// Names captured per row; the blank name cell yields null (name-less).
+		expect(leadRepo.creates).toEqual([
+			{ phoneE164: "+5511987654321", source: "csv", displayName: "João Silva" },
+			{ phoneE164: "+554133221100", source: "csv", displayName: "Ana" },
+			{ phoneE164: "+5511912345678", source: "csv", displayName: null },
+		]);
+	});
+
+	it("recognizes alternate name-column headers (e.g. cliente)", async () => {
+		const csv = "cliente,celular\nCarlos,11987654321\n";
+		await importer().import(buf(csv), "csv");
+
+		expect(leadRepo.creates).toEqual([
+			{ phoneE164: "+5511987654321", source: "csv", displayName: "Carlos" },
+		]);
+	});
+
+	it("does not capture a name from a header-less phone list", async () => {
+		const csv = "11987654321\n";
+		await importer().import(buf(csv), "csv");
+
+		expect(leadRepo.creates).toEqual([
+			{ phoneE164: "+5511987654321", source: "csv", displayName: null },
+		]);
 	});
 
 	it("returns an empty report for an empty CSV", async () => {

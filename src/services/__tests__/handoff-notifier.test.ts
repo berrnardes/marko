@@ -21,6 +21,7 @@ function leadSnapshot(): LeadSnapshot {
 		id: LEAD_ID,
 		phoneE164: "+5547999990000",
 		source: "landing",
+		displayName: null,
 		lifecycleState: "HOT",
 		optInStatus: "opt_in",
 		optInAt: new Date(),

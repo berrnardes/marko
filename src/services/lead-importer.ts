@@ -134,6 +134,20 @@ export const DEFAULT_PHONE_COLUMN_ALIASES: readonly string[] = [
 	"mobile",
 ];
 
+/**
+ * Default header-cell tokens that identify an optional lead-name column (matched
+ * case-insensitively as substrings). Deliberately conservative — a name column
+ * is only used when a header row is present and the match is not the phone
+ * column — so a stray label never mis-captures a name.
+ */
+export const DEFAULT_NAME_COLUMN_ALIASES: readonly string[] = [
+	"name",
+	"nome",
+	"cliente",
+	"contato",
+	"contact",
+];
+
 /** Construction dependencies for {@link LeadImporterService}. */
 export interface LeadImporterConfig {
 	/** Persistence boundary: look up by phone, create new Leads (Req 1.4, 1.5). */
@@ -147,6 +161,11 @@ export interface LeadImporterConfig {
 	 * Defaults to {@link DEFAULT_PHONE_COLUMN_ALIASES}.
 	 */
 	phoneColumnAliases?: readonly string[];
+	/**
+	 * Optional override of the header tokens used to locate the lead-name column.
+	 * Defaults to {@link DEFAULT_NAME_COLUMN_ALIASES}.
+	 */
+	nameColumnAliases?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -168,33 +187,51 @@ function parseRows(csv: Buffer): string[][] {
 	}) as string[][];
 }
 
-/** Location of the phone column and the index at which data rows begin. */
-interface PhoneColumnLocation {
+/** Location of the phone / name columns and the index at which data rows begin. */
+interface ColumnLocation {
 	/** Column index holding the phone number in each data row. */
 	phoneColumnIndex: number;
+	/** Column index holding the lead name, or `null` when there is none. */
+	nameColumnIndex: number | null;
 	/** Index of the first data row in the parsed rows (1 with a header, else 0). */
 	dataStartIndex: number;
 }
 
+/** Whether `cell`'s lowercased text includes any of `aliases`. */
+function matchesAlias(cell: string, aliases: readonly string[]): boolean {
+	const c = cell.trim().toLowerCase();
+	return aliases.some((alias) => c.includes(alias));
+}
+
 /**
- * Locate the phone column. When the first row contains a recognizable phone
- * header (a cell whose lowercased text includes one of `aliases`), that column
- * is used and data starts on the next row; otherwise the file is treated as a
- * header-less single/first-column phone list and every row is a data row.
+ * Locate the phone column and, when a header is present, an optional name
+ * column. When the first row contains a recognizable phone header (a cell whose
+ * lowercased text includes one of `phoneAliases`), that column is used, the
+ * first other cell matching `nameAliases` becomes the name column, and data
+ * starts on the next row. Otherwise the file is treated as a header-less
+ * single/first-column phone list: every row is a data row and no name is read.
  */
-function locatePhoneColumn(
+function locateColumns(
 	rows: string[][],
-	aliases: readonly string[],
-): PhoneColumnLocation {
+	phoneAliases: readonly string[],
+	nameAliases: readonly string[],
+): ColumnLocation {
 	const header = rows[0] ?? [];
-	const headerIndex = header.findIndex((cell) => {
-		const c = cell.trim().toLowerCase();
-		return aliases.some((alias) => c.includes(alias));
-	});
-	if (headerIndex >= 0) {
-		return { phoneColumnIndex: headerIndex, dataStartIndex: 1 };
+	const phoneColumnIndex = header.findIndex((cell) =>
+		matchesAlias(cell, phoneAliases),
+	);
+	if (phoneColumnIndex >= 0) {
+		const nameColumnIndex = header.findIndex(
+			(cell, index) =>
+				index !== phoneColumnIndex && matchesAlias(cell, nameAliases),
+		);
+		return {
+			phoneColumnIndex,
+			nameColumnIndex: nameColumnIndex >= 0 ? nameColumnIndex : null,
+			dataStartIndex: 1,
+		};
 	}
-	return { phoneColumnIndex: 0, dataStartIndex: 0 };
+	return { phoneColumnIndex: 0, nameColumnIndex: null, dataStartIndex: 0 };
 }
 
 // ---------------------------------------------------------------------------
@@ -212,6 +249,7 @@ export class LeadImporterService implements LeadImporter {
 	private readonly cadence: CadenceScheduler;
 	private readonly clock: Clock;
 	private readonly phoneColumnAliases: readonly string[];
+	private readonly nameColumnAliases: readonly string[];
 
 	constructor(deps: LeadImporterConfig) {
 		this.leads = deps.leads;
@@ -219,6 +257,8 @@ export class LeadImporterService implements LeadImporter {
 		this.clock = deps.clock;
 		this.phoneColumnAliases =
 			deps.phoneColumnAliases ?? DEFAULT_PHONE_COLUMN_ALIASES;
+		this.nameColumnAliases =
+			deps.nameColumnAliases ?? DEFAULT_NAME_COLUMN_ALIASES;
 	}
 
 	/** @inheritdoc */
@@ -235,10 +275,8 @@ export class LeadImporterService implements LeadImporter {
 			return report;
 		}
 
-		const { phoneColumnIndex, dataStartIndex } = locatePhoneColumn(
-			rows,
-			this.phoneColumnAliases,
-		);
+		const { phoneColumnIndex, nameColumnIndex, dataStartIndex } =
+			locateColumns(rows, this.phoneColumnAliases, this.nameColumnAliases);
 
 		for (let i = dataStartIndex; i < rows.length; i++) {
 			// 1-based row number within the parsed file; with a header present the
@@ -276,11 +314,17 @@ export class LeadImporterService implements LeadImporter {
 			}
 
 			// (4) Create the new Lead in COLD_QUEUED recording its source (Req 1.5,
-			// 2.1), then enroll it into the cadence via the injected scheduler — the
-			// same enrollment path any future source uses (Req 2.2, 2.3, 3.1).
+			// 2.1) and any name the row carried, then enroll it into the cadence via
+			// the injected scheduler — the same enrollment path any future source
+			// uses (Req 2.2, 2.3, 3.1).
+			const rawName =
+				nameColumnIndex === null
+					? ""
+					: (rows[i][nameColumnIndex] ?? "").trim();
 			const created = await this.leads.create({
 				phoneE164: normalized,
 				source,
+				displayName: rawName.length > 0 ? rawName : null,
 			});
 			await this.cadence.enroll(created.id, this.clock.now());
 

@@ -19,6 +19,8 @@ export interface LeadSummaryView {
 	id: string;
 	phoneE164: string;
 	source: string;
+	/** Lead name captured from an import, when one was supplied. */
+	displayName: string | null;
 	lifecycleState: LifecycleState;
 	score: number;
 	classificationBand: ClassificationBand | null;
@@ -51,6 +53,8 @@ export interface LeadDetailView {
 	id: string;
 	phoneE164: string;
 	source: string;
+	/** Lead name captured from an import, when one was supplied. */
+	displayName: string | null;
 	lifecycleState: LifecycleState;
 	optInStatus: OptInStatus;
 	score: number;

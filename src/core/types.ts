@@ -136,6 +136,8 @@ export interface LeadSnapshot {
 	phoneE164: string;
 	/** Originating source recorded on the lead (Req 2.1). */
 	source: string;
+	/** Optional lead name for personalized greetings; `null` when unknown (Req 4.1). */
+	displayName: string | null;
 	lifecycleState: LifecycleState;
 	optInStatus: OptInStatus;
 	/** Timestamp of the current lawful-basis value, when known. */

@@ -219,11 +219,11 @@ export class CadenceWorkerService implements CadenceWorker {
 
 		// 3. Send path: render the touch text (PURE, Req 4.1–4.5) and enqueue an
 		//    outbound send through the choke point — outbound never goes out inline.
-		//    The lead snapshot carries no display name, so the templates fall back
-		//    to their name-less greeting; T1 still personalizes from the collected
-		//    qualification data (Req 4.1, 4.7).
+		//    The templates personalize `{nome}` from the lead's captured name (when
+		//    an import supplied one) and fall back to a name-less greeting otherwise;
+		//    T1 also personalizes from the collected qualification data (Req 4.1, 4.7).
 		const view: LeadView = {
-			displayName: null,
+			displayName: lead.displayName,
 			qualification: lead.qualification,
 		};
 		const content = this.messages.renderTouch(touch, view);

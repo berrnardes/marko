@@ -28,6 +28,7 @@ function makeLead(overrides: Partial<LeadSnapshot> = {}): LeadSnapshot {
 		id: "lead-1",
 		phoneE164: "+5511987654321",
 		source: "csv",
+		displayName: null,
 		lifecycleState: "MONTHLY_NURTURE",
 		optInStatus: "opt_in",
 		optInAt: null,

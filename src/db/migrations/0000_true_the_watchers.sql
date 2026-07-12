@@ -36,6 +36,7 @@ CREATE TABLE "leads" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"phone_e164" text NOT NULL,
 	"source" text NOT NULL,
+	"display_name" text,
 	"lifecycle_state" text DEFAULT 'COLD_QUEUED' NOT NULL,
 	"opt_in_status" text DEFAULT 'opt_in' NOT NULL,
 	"opt_in_at" timestamp with time zone,
@@ -77,6 +78,15 @@ CREATE TABLE "messages" (
 	"number_id" uuid,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "messages_direction_check" CHECK ("messages"."direction" IN ('inbound', 'outbound'))
+);
+--> statement-breakpoint
+CREATE TABLE "phone_verifications" (
+	"user_id" text PRIMARY KEY NOT NULL,
+	"phone_e164" text NOT NULL,
+	"code_hash" text NOT NULL,
+	"attempts" integer DEFAULT 0 NOT NULL,
+	"expires_at" timestamp with time zone NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "scheduled_jobs" (
@@ -134,6 +144,7 @@ CREATE TABLE "member" (
 	"organization_id" text NOT NULL,
 	"user_id" text NOT NULL,
 	"role" text DEFAULT 'member' NOT NULL,
+	"receives_handoff_alerts" boolean DEFAULT true NOT NULL,
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
@@ -166,6 +177,8 @@ CREATE TABLE "user" (
 	"email" text NOT NULL,
 	"email_verified" boolean DEFAULT false NOT NULL,
 	"image" text,
+	"phone_e164" text,
+	"phone_verified_at" timestamp,
 	"created_at" timestamp DEFAULT now() NOT NULL,
 	"updated_at" timestamp DEFAULT now() NOT NULL,
 	CONSTRAINT "user_email_unique" UNIQUE("email")

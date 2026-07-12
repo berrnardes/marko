@@ -9,6 +9,7 @@ function makeLead(overrides: Partial<LeadSnapshot> = {}): LeadSnapshot {
 		id: "lead-1",
 		phoneE164: "+5547996334573",
 		source: "test",
+		displayName: null,
 		lifecycleState: "IN_CADENCE",
 		optInStatus: "opt_in",
 		optInAt: null,

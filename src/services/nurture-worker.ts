@@ -159,11 +159,11 @@ export class NurtureWorkerService implements NurtureWorker {
 		}
 
 		// 3. Send path: render the nurture text (PURE) and enqueue an outbound send
-		//    through the choke point — outbound never goes out inline. The lead
-		//    snapshot carries no display name, so the template falls back to its
-		//    name-less greeting.
+		//    through the choke point — outbound never goes out inline. The template
+		//    personalizes `{nome}` from the lead's captured name when present and
+		//    falls back to its name-less greeting otherwise.
 		const view: LeadView = {
-			displayName: null,
+			displayName: lead.displayName,
 			qualification: lead.qualification,
 		};
 		const content = this.messages.renderNurture(view);

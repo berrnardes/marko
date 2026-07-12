@@ -23,6 +23,7 @@ const LEAD: LeadSnapshot = {
 	id: "lead-1",
 	phoneE164: "+5547996334573",
 	source: "csv",
+	displayName: null,
 	lifecycleState: "HOT",
 	optInStatus: "opt_in",
 	optInAt: null,
