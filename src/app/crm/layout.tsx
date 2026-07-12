@@ -13,6 +13,7 @@ import { getServerSession } from "@/services/auth";
 
 import { CrmNav } from "./_components/nav";
 import { CrmQueryProvider } from "./providers";
+import { CrmThemeProvider } from "./theme-provider";
 
 export default async function CrmLayout({
 	children,
@@ -23,13 +24,15 @@ export default async function CrmLayout({
 	}
 
 	return (
-		<CrmQueryProvider>
-			<div className="flex min-h-full flex-col">
-				<CrmNav email={session.user.email ?? null} />
-				<main className="mx-auto w-full max-w-6xl flex-1 px-6 py-8">
-					{children}
-				</main>
-			</div>
-		</CrmQueryProvider>
+		<CrmThemeProvider>
+			<CrmQueryProvider>
+				<div className="flex min-h-screen flex-col">
+					<CrmNav email={session.user.email ?? null} />
+					<main className="mx-auto w-full max-w-6xl flex-1 px-6 py-8">
+						{children}
+					</main>
+				</div>
+			</CrmQueryProvider>
+		</CrmThemeProvider>
 	);
 }

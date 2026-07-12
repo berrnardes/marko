@@ -86,6 +86,45 @@ html {
 	color-scheme: light;
 }
 
+.crm-theme {
+	color-scheme: light;
+}
+
+.crm-theme.dark {
+	color-scheme: dark;
+	--background: #121310;
+	--foreground: #f3f1eb;
+	--card: #1b1d18;
+	--card-foreground: #f3f1eb;
+	--popover: #1b1d18;
+	--popover-foreground: #f3f1eb;
+	--primary: #f3f1eb;
+	--primary-foreground: #121310;
+	--secondary: #4fb7a5;
+	--secondary-foreground: #071412;
+	--muted: #292b25;
+	--muted-foreground: #b6b1a7;
+	--accent: #2f342d;
+	--accent-foreground: #f3f1eb;
+	--destructive: oklch(0.704 0.191 22.216);
+	--border: #343730;
+	--input: #3a3d35;
+	--ring: #4fb7a5;
+	--chart-1: #4fb7a5;
+	--chart-2: #f3f1eb;
+	--chart-3: #b6b1a7;
+	--chart-4: #777267;
+	--chart-5: #343730;
+	--sidebar: #1b1d18;
+	--sidebar-foreground: #f3f1eb;
+	--sidebar-primary: #f3f1eb;
+	--sidebar-primary-foreground: #121310;
+	--sidebar-accent: #2f342d;
+	--sidebar-accent-foreground: #f3f1eb;
+	--sidebar-border: #343730;
+	--sidebar-ring: #4fb7a5;
+}
+
 /* Anchor navigation: compensate the fixed landing header and keep the jump
  * smooth only for users who have not opted out of motion. */
 @media (prefers-reduced-motion: no-preference) {

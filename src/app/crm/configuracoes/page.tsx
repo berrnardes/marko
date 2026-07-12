@@ -8,6 +8,7 @@
 "use client";
 
 import { REGEXP_ONLY_DIGITS } from "input-otp";
+import { MoonIcon, SunIcon } from "lucide-react";
 import { useState } from "react";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -37,6 +38,7 @@ import {
 	useVerifyAlertPhone,
 } from "../_lib/api";
 import type { NotificationSettingsView } from "../_lib/types";
+import { useCrmTheme } from "../theme-provider";
 
 /** Inline error surface for a failed mutation. */
 function ErrorNote({ message }: { message: string }) {
@@ -237,6 +239,29 @@ function AlertToggle({ settings }: { settings: NotificationSettingsView }) {
 	);
 }
 
+/** Local visual preference for the CRM shell. */
+function ThemeModeButton() {
+	const { isDark, toggleTheme } = useCrmTheme();
+	const Icon = isDark ? SunIcon : MoonIcon;
+
+	return (
+		<div className="flex flex-col gap-3">
+			<div className="flex flex-wrap items-center justify-between gap-3">
+				<div>
+					<p className="text-sm font-medium">Modo escuro</p>
+					<p className="text-xs text-muted-foreground">
+						Aplica o tema apenas ao CRM neste navegador.
+					</p>
+				</div>
+				<Button variant="outline" onClick={toggleTheme}>
+					<Icon aria-hidden="true" />
+					{isDark ? "Usar modo claro" : "Usar modo escuro"}
+				</Button>
+			</div>
+		</div>
+	);
+}
+
 export default function ConfiguracoesPage() {
 	const { data: settings, isPending, isError, error } = useNotificationSettings();
 
@@ -267,6 +292,15 @@ export default function ConfiguracoesPage() {
 						</CardHeader>
 						<CardContent>
 							<AlertToggle settings={settings} />
+						</CardContent>
+					</Card>
+
+					<Card>
+						<CardHeader>
+							<CardTitle>Aparência</CardTitle>
+						</CardHeader>
+						<CardContent>
+							<ThemeModeButton />
 						</CardContent>
 					</Card>
 				</div>
