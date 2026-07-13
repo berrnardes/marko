@@ -225,12 +225,12 @@ export function defaultAntiBanConfig(): AntiBanConfig {
 	return {
 		baseDailyCap: envInt("ANTIBAN_BASE_DAILY_CAP", 40),
 		warmupInitialCap: envInt("ANTIBAN_WARMUP_INITIAL_CAP", 10),
-		warmupRampDays: envInt("ANTIBAN_WARMUP_RAMP_DAYS", 14),
+		warmupRampDays: envInt("ANTIBAN_WARMUP_RAMP_DAYS", 7),
 		delayMinMs: envInt("ANTIBAN_DELAY_MIN_MS", 30_000),
 		delayMaxMs: envInt("ANTIBAN_DELAY_MAX_MS", 120_000),
 		sendWindow: {
-			startHour: envInt("ANTIBAN_SEND_WINDOW_START_HOUR", 9),
-			endHour: envInt("ANTIBAN_SEND_WINDOW_END_HOUR", 20),
+			startHour: envInt("ANTIBAN_SEND_WINDOW_START_HOUR", 8),
+			endHour: envInt("ANTIBAN_SEND_WINDOW_END_HOUR", 19),
 		},
 	};
 }
@@ -398,7 +398,10 @@ export function getRuntime(): Promise<Runtime> {
 		globalForRuntime.__markoRuntime = (async () => {
 			if (CADENCE_TEST_MODE) {
 				logger.warn(
-					{ event: "runtime.cadence_test_mode", touches: CADENCE_TOUCHES_COUNT },
+					{
+						event: "runtime.cadence_test_mode",
+						touches: CADENCE_TOUCHES_COUNT,
+					},
 					"CADENCE_TEST_MODE is ON — offsets are in seconds",
 				);
 			}
@@ -637,7 +640,11 @@ async function processOutboundRequest(
 			kind: request.kind,
 		});
 		log.info(
-			{ event: "outbound.outcome", numberId: number.id, status: outcome.status },
+			{
+				event: "outbound.outcome",
+				numberId: number.id,
+				status: outcome.status,
+			},
 			"outbound send outcome",
 		);
 		switch (outcome.status) {

@@ -2,14 +2,7 @@ import { Pool } from "pg";
 
 const DEFAULT_DATABASE_URL = "postgres://localhost:5432/marko";
 const DEFAULT_SCHEMAS = ["public", "pgboss"];
-const SKIPPED_TABLES = new Set([
-	"__drizzle_migrations",
-	"account",
-	"session",
-	"user",
-	"verification",
-	"whatsapp_numbers",
-]);
+const SKIPPED_TABLES = new Set(["__drizzle_migrations"]);
 
 function hasConfirmation(): boolean {
 	return (
