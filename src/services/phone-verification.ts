@@ -145,8 +145,9 @@ export function createPhoneVerificationService(
 				expiresAt,
 			});
 
+			let chatId: string;
 			try {
-				const chatId = await waha.resolveChatId(fromNumberId, phoneE164);
+				chatId = await waha.resolveChatId(fromNumberId, phoneE164);
 				await waha.sendText(fromNumberId, chatId, buildVerificationText(code));
 			} catch (err) {
 				// The code never reached the phone — drop it so the user retries
@@ -158,8 +159,12 @@ export function createPhoneVerificationService(
 				);
 				return { ok: false, reason: "send_failed" };
 			}
+			// Record the exact send target: `fromNumberId` is the sending (cadence)
+			// number and `chatId` is the resolved recipient. If a code ever appears
+			// to land on the sending number itself, this line makes it visible —
+			// `chatId` must be the consultant's number, never the sender's own JID.
 			logger.info(
-				{ event: "phone_verify.started", userId },
+				{ event: "phone_verify.started", userId, fromNumberId, phoneE164, chatId },
 				"verification code sent",
 			);
 			return { ok: true, phoneE164, expiresAt };
