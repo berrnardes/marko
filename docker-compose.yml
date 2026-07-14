@@ -141,6 +141,12 @@ services:
       # Para onde o WAHA entrega os eventos inbound: o webhook do app na Vercel.
       - WHATSAPP_HOOK_URL=${WAHA_WEBHOOK_URL}
       - WHATSAPP_HOOK_EVENTS=message
+      # Assina cada webhook com HMAC SHA-512 sobre o corpo cru, no header
+      # `X-Webhook-Hmac`. O app (Vercel) EXIGE essa assinatura e rejeita
+      # entregas sem ela (401) — ou falha com 500 se WAHA_WEBHOOK_HMAC_SECRET
+      # não estiver setado lá. Precisa ser o MESMO segredo dos dois lados:
+      # aqui (WAHA) e na env WAHA_WEBHOOK_HMAC_SECRET do projeto na Vercel.
+      - WHATSAPP_HOOK_HMAC_KEY=${WAHA_WEBHOOK_HMAC_SECRET}
     volumes:
       # Persiste a sessão autenticada (QR code) entre reinícios do container.
       - waha-sessions:/app/.sessions
