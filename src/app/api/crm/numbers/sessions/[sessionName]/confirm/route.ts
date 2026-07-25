@@ -9,9 +9,10 @@
 
 import { NextResponse } from "next/server";
 
-import { denyIfUnauthenticated } from "@/app/api/crm/_lib/guard";
+import { requireOrgSession } from "@/app/api/crm/_lib/guard";
 import { toNumberView } from "@/app/api/crm/numbers/_view";
 import { DrizzleNumberRepository } from "@/db/number-repository";
+import { withOrg } from "@/db/with-org";
 import { msisdnFromMe, wahaAdmin } from "@/services/waha-admin-client";
 
 type Params = { params: Promise<{ sessionName: string }> };
@@ -20,8 +21,8 @@ export async function POST(
 	_request: Request,
 	{ params }: Params,
 ): Promise<NextResponse> {
-	const denied = await denyIfUnauthenticated();
-	if (denied) return denied;
+	const auth = await requireOrgSession();
+	if ("denied" in auth) return auth.denied;
 
 	const { sessionName } = await params;
 
@@ -50,18 +51,26 @@ export async function POST(
 		);
 	}
 
-	const repo = new DrizzleNumberRepository();
+	// The WAHA reads above are done; only now is a transaction opened, so no
+	// pooled connection is held across the network calls (ADR-004).
+	const { organizationId } = auth.org;
+	const outcome = await withOrg(organizationId, async (tx) => {
+		const repo = new DrizzleNumberRepository(organizationId, tx);
 
-	// Idempotency: if this session (or the same line) was already confirmed,
-	// return the existing row instead of inserting a duplicate — the table has
-	// no unique constraint to rely on.
-	const existing = (await repo.listAll()).find(
-		(n) => n.sessionName === sessionName || n.msisdn === msisdn,
+		// Idempotency: if this session (or the same line) was already confirmed,
+		// return the existing row instead of inserting a duplicate — the table has
+		// no unique constraint on msisdn to rely on.
+		const existing = (await repo.listAll()).find(
+			(n) => n.sessionName === sessionName || n.msisdn === msisdn,
+		);
+		if (existing) {
+			return { record: existing, created: false };
+		}
+		return { record: await repo.insert({ sessionName, msisdn }), created: true };
+	});
+
+	return NextResponse.json(
+		{ number: toNumberView(outcome.record) },
+		outcome.created ? { status: 201 } : undefined,
 	);
-	if (existing) {
-		return NextResponse.json({ number: toNumberView(existing) });
-	}
-
-	const record = await repo.insert({ sessionName, msisdn });
-	return NextResponse.json({ number: toNumberView(record) }, { status: 201 });
 }

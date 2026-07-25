@@ -189,31 +189,31 @@ export interface InboundProcessingQueue {
 // Dependencies + result
 // ---------------------------------------------------------------------------
 
-/** Construction dependencies for {@link processWahaWebhook}. */
-export interface WahaWebhookDeps {
-	/**
-	 * The shared HMAC secret the `X-Webhook-Hmac` signature is verified against
-	 * (Req 7.1). Sourced from the `WAHA_WEBHOOK_HMAC_SECRET` env var by the route;
-	 * never hard-coded.
-	 */
-	secret: string;
+/**
+ * Which tenant a delivery belongs to, resolved from the WAHA session name.
+ *
+ * This is the inbound tenancy boundary. A webhook delivery identifies itself
+ * only by `session`, so the organization is unknown when the request arrives —
+ * the HMAC must be verified and the body parsed before anything can be scoped.
+ */
+export interface WahaSessionOwner {
+	/** The organization that registered the delivering WAHA session. */
+	organizationId: string;
+	/** The domain `numberId` of the registered number that received the message. */
+	numberId: string;
+}
+
+/**
+ * The persistence handles for one delivery, bound to its tenant. Supplied by
+ * {@link WahaWebhookDeps.withScope}, which is also where the RLS transaction
+ * context is established — hence the callback shape rather than plain fields:
+ * the repositories are only valid for the duration of that unit of work.
+ */
+export interface WahaScopedRepositories {
 	/** Attribute the sender by normalized E.164, creating a Lead if unknown (Req 7.1, 7.5). */
 	leads: LeadRepository;
 	/** Idempotency lookup by `wa_message_id` + raw inbound persistence (Req 7.4). */
 	messages: MessageRepository;
-	/** Durable enqueue seam onto the inbound processing pipeline (Req 7.1). */
-	queue: InboundProcessingQueue;
-	/**
-	 * Resolve a WhatsApp hidden Linked ID (`@lid`) sender to its phone-number
-	 * chat id (`@c.us`) — WAHA's WEBJS/GOWS engines now deliver `from` as a
-	 * `@lid` for many senders (WhatsApp's LID privacy migration), which carries
-	 * no phone digits. When the sender is a `@lid`, the webhook resolves it here
-	 * before normalizing to E.164. Injected (not the concrete WAHA client) so the
-	 * service stays testable; backed by {@link import("./waha-client").WahaClient.resolveLidToPhone}
-	 * in production. Optional: when absent, a `@lid` sender is treated as
-	 * unattributable.
-	 */
-	lids?: LidResolver;
 	/**
 	 * Count a consultant's manual outbound (an ingested `fromMe` echo) against the
 	 * sending number's daily anti-ban cap, so the controller's count includes
@@ -222,12 +222,52 @@ export interface WahaWebhookDeps {
 	 * counter is not touched.
 	 */
 	antiBan?: Pick<AntiBanController, "recordSend">;
+}
+
+/** Construction dependencies for {@link processWahaWebhook}. */
+export interface WahaWebhookDeps {
 	/**
-	 * Resolve the WAHA `session` that delivered an outbound echo to the domain
-	 * `numberId` whose daily counter should be incremented. Paired with
-	 * {@link antiBan}; absent in tests.
+	 * The shared HMAC secret the `X-Webhook-Hmac` signature is verified against
+	 * (Req 7.1). Sourced from the `WAHA_WEBHOOK_HMAC_SECRET` env var by the route;
+	 * never hard-coded. Process-wide, not per tenant: it authenticates the WAHA
+	 * instance, which is shared.
 	 */
-	resolveNumberId?: (session: string) => Promise<string | undefined>;
+	secret: string;
+	/**
+	 * Map the delivering WAHA `session` to the organization that registered it.
+	 * Backed in production by `app.resolve_session_org()` — a `SECURITY DEFINER`
+	 * function over `whatsapp_numbers.session_name` (globally unique, so it
+	 * yields at most one organization), which is the one read allowed to happen
+	 * before a tenant context exists (ADR-004).
+	 *
+	 * Returns `null` when no registered number claims the session — the delivery
+	 * is then acknowledged with `200` and dropped, never `5xx`: WAHA retries on
+	 * error, and a session nobody owns would be retried forever.
+	 */
+	resolveSession: (session: string) => Promise<WahaSessionOwner | null>;
+	/**
+	 * Run one unit of persistence work as `owner`, with repositories bound to
+	 * that organization. In production this opens the RLS transaction
+	 * (`withOrg`), so the callback must stay short and free of network I/O — the
+	 * connection it holds is a pooled PgBouncer slot. Every HTTP call the webhook
+	 * makes (the `@lid` lookup) is deliberately performed BEFORE this is entered.
+	 */
+	withScope: <T>(
+		owner: WahaSessionOwner,
+		fn: (scope: WahaScopedRepositories) => Promise<T>,
+	) => Promise<T>;
+	/** Durable enqueue seam for the tenant, used after the write commits (Req 7.1). */
+	queue: (organizationId: string) => InboundProcessingQueue;
+	/**
+	 * Resolve a WhatsApp hidden Linked ID (`@lid`) sender to its phone-number
+	 * chat id (`@c.us`) — WAHA's WEBJS/GOWS engines now deliver `from` as a
+	 * `@lid` for many senders (WhatsApp's LID privacy migration), which carries
+	 * no phone digits. When the sender is a `@lid`, the webhook resolves it here
+	 * before normalizing to E.164. Injected (not the concrete WAHA client) so the
+	 * service stays testable; it needs only the session name, so it is not
+	 * tenant-bound. Optional: when absent, a `@lid` sender is unattributable.
+	 */
+	lids?: LidResolver;
 	/**
 	 * Source recorded on a Lead created from an unknown inbound sender (Req 7.5).
 	 * Defaults to {@link DEFAULT_INBOUND_WEBHOOK_SOURCE}.
@@ -390,6 +430,23 @@ export async function processWahaWebhook(
 	const { session, payload } = result.data;
 	const waMessageId = payload.id;
 
+	// 2a. Resolve the tenant. Everything below acts through repositories bound to
+	//     the organization that registered this WAHA session; until this point
+	//     nothing has been read or written. A session no registered number claims
+	//     is acknowledged with 200 and dropped — returning 5xx would make WAHA
+	//     redeliver it forever.
+	const owner = await deps.resolveSession(session);
+	if (!owner) {
+		logger.warn(
+			{ event: "inbound.unknown_session", session, waMessageId },
+			"no registered WhatsApp number owns this WAHA session; dropping delivery",
+		);
+		return {
+			status: 200,
+			body: { ok: true, status: "ignored", reason: "unknown_session" },
+		};
+	}
+
 	// 2b. Outbound echo ingestion. WAHA delivers the session's own sends as
 	//     `fromMe: true` — including a consultant's replies typed on a WhatsApp Web
 	//     linked device connected to the same number (beta flow). Rather than
@@ -398,38 +455,23 @@ export async function processWahaWebhook(
 	//     cap. Our OWN automated sends are already recorded by the outbound
 	//     committer with the same `wa_message_id`, so they dedup to a no-op here.
 	if (payload.fromMe) {
-		return handleOutboundEcho(deps, session, payload);
+		return handleOutboundEcho(deps, owner, session, payload);
 	}
 
-	// 3. Idempotency by `wa_message_id` (Req 7.4). WAHA retries deliveries, so a
-	//    message already persisted is acknowledged fast and NOT re-processed.
-	const existing = await deps.messages.findByWaMessageId(waMessageId);
-	if (existing) {
-		return { status: 200, body: { ok: true, status: "duplicate" } };
-	}
-
-	// 4. Attribute the sender and persist the raw inbound. The `messages.lead_id`
-	//    FK is NOT NULL, so the Lead must exist before the message is recorded:
-	//    normalize the sender to E.164 (the same pure rule the importer uses so
-	//    the dedup key matches) and find-or-create the Lead (Req 7.1, 7.5). A
-	//    sender that cannot be normalized is malformed for attribution → 400.
+	// 3. Attribute the sender to an E.164 number — BEFORE opening any
+	//    transaction, because this step can make a network call.
 	//
 	//    WhatsApp's LID migration: WAHA may deliver `from` as a hidden Linked ID
 	//    (`<digits>@lid`) that carries no phone digits. Resolve it to a real
 	//    phone-number chat id via the injected Lids resolver before normalizing;
 	//    an unresolvable `@lid` (sender unknown to the session) is unattributable.
-	let senderChatId = payload.from;
-	if (senderChatId.endsWith(LID_SUFFIX)) {
-		const resolved = deps.lids
-			? await deps.lids.resolveLidToPhone(session, senderChatId)
-			: null;
-		if (resolved === null) {
-			return {
-				status: 400,
-				body: { ok: false, status: "rejected", reason: "unresolved_lid" },
-			};
-		}
-		senderChatId = resolved;
+	//    A sender that cannot be normalized is malformed for attribution → 400.
+	const senderChatId = await resolveChatId(deps, session, payload.from);
+	if (senderChatId === null) {
+		return {
+			status: 400,
+			body: { ok: false, status: "rejected", reason: "unresolved_lid" },
+		};
 	}
 	const phoneE164 = normalizePhone(senderChatId, "BR");
 	if (phoneE164 === null) {
@@ -438,40 +480,65 @@ export async function processWahaWebhook(
 			body: { ok: false, status: "rejected", reason: "invalid_sender" },
 		};
 	}
-	const existingLead = await deps.leads.findByPhone(phoneE164);
-	const lead =
-		existingLead ??
-		(await deps.leads.create({
-			phoneE164,
-			source: deps.inboundSource ?? DEFAULT_INBOUND_WEBHOOK_SOURCE,
-		}));
 
 	// WAHA `timestamp` is epoch SECONDS; convert to a `Date` for persistence.
 	const receivedAt = new Date(payload.timestamp * 1000);
-	const persisted = await deps.messages.append({
-		leadId: lead.id,
-		direction: "inbound",
-		content: payload.body,
-		waMessageId,
-		createdAt: receivedAt,
-	});
 
-	// 5. Enqueue processing and acknowledge fast (Req 7.1). The full
-	//    Inbound_Handler pipeline (sendSeen, opt-out, cancellation, lifecycle
-	//    advance, scoring, qualification turn) runs in the worker, NOT inline.
-	//    TODO(task 23.1): the worker handler must run the pipeline WITHOUT
-	//    re-persisting this message (the raw inbound is already recorded here),
-	//    e.g. by skipping the Inbound_Handler's own `messages.append` for an
-	//    already-persisted `wa_message_id`, so idempotency holds end-to-end.
+	// 4. The persistence unit of work, scoped to the tenant (and, in production,
+	//    inside its RLS transaction). Kept deliberately tight — no network calls
+	//    inside — because it holds a pooled connection:
+	//      - idempotency by `wa_message_id` (Req 7.4): WAHA retries deliveries, so
+	//        a message already persisted is acknowledged and NOT re-processed;
+	//      - find-or-create the Lead (Req 7.1, 7.5) — the `messages.lead_id` FK is
+	//        NOT NULL, so the Lead must exist before the message is recorded;
+	//      - persist the raw inbound, which becomes the idempotency key above.
+	const persisted = await deps.withScope(owner, async (scope) => {
+		const existing = await scope.messages.findByWaMessageId(waMessageId);
+		if (existing) {
+			return null;
+		}
+		const existingLead = await scope.leads.findByPhone(phoneE164);
+		const lead =
+			existingLead ??
+			(await scope.leads.create({
+				phoneE164,
+				source: deps.inboundSource ?? DEFAULT_INBOUND_WEBHOOK_SOURCE,
+			}));
+		const message = await scope.messages.append({
+			leadId: lead.id,
+			direction: "inbound",
+			content: payload.body,
+			waMessageId,
+			createdAt: receivedAt,
+		});
+		return { leadId: lead.id, messageId: message.id };
+	});
+	if (persisted === null) {
+		return { status: 200, body: { ok: true, status: "duplicate" } };
+	}
+
+	// 5. Enqueue processing and acknowledge fast (Req 7.1). Outside the
+	//    transaction: pg-boss holds its own pool, so enqueuing inside would not
+	//    be atomic with the write anyway, and would hold the connection longer.
+	//    The full Inbound_Handler pipeline (sendSeen, opt-out, cancellation, and
+	//    the handoff to a consultant) runs in the worker, NOT inline. The
+	//    worker's message append is idempotent on `wa_message_id`, so the raw
+	//    inbound recorded here is not written twice.
 	const correlationId = randomUUID();
 	logger.info(
-		{ event: "inbound.received", correlationId, leadId: lead.id, session },
+		{
+			event: "inbound.received",
+			correlationId,
+			leadId: persisted.leadId,
+			session,
+			organizationId: owner.organizationId,
+		},
 		"inbound message accepted",
 	);
-	await deps.queue.enqueueInbound({
+	await deps.queue(owner.organizationId).enqueueInbound({
 		correlationId,
-		leadId: lead.id,
-		messageId: persisted.id,
+		leadId: persisted.leadId,
+		messageId: persisted.messageId,
 		waMessageId,
 		from: senderChatId,
 		text: payload.body,
@@ -508,70 +575,88 @@ export async function processWahaWebhook(
  */
 async function handleOutboundEcho(
 	deps: WahaWebhookDeps,
+	owner: WahaSessionOwner,
 	session: string,
 	payload: WahaMessageWebhook["payload"],
 ): Promise<WebhookResult> {
 	const waMessageId = payload.id;
 
-	// Dedup: our own automated sends (recorded by the committer) and WAHA retries
-	// both already exist under this id — a no-op, so anti-ban is never double-counted.
-	const existing = await deps.messages.findByWaMessageId(waMessageId);
-	if (existing) {
-		return { status: 200, body: { ok: true, status: "duplicate" } };
-	}
-
 	// Attribute by the recipient (`to`): for a `fromMe` echo WE are the sender.
+	// Resolved before the transaction, since a `@lid` costs a WAHA round trip.
 	const recipient = payload.to;
 	if (!recipient) {
 		return { status: 200, body: { ok: true, status: "ignored" } };
 	}
-	let recipientChatId = recipient;
-	if (recipientChatId.endsWith(LID_SUFFIX)) {
-		const resolved = deps.lids
-			? await deps.lids.resolveLidToPhone(session, recipientChatId)
-			: null;
-		if (resolved === null) {
-			return { status: 200, body: { ok: true, status: "ignored" } };
-		}
-		recipientChatId = resolved;
+	const recipientChatId = await resolveChatId(deps, session, recipient);
+	if (recipientChatId === null) {
+		return { status: 200, body: { ok: true, status: "ignored" } };
 	}
 	const phoneE164 = normalizePhone(recipientChatId, "BR");
 	if (phoneE164 === null) {
 		return { status: 200, body: { ok: true, status: "ignored" } };
 	}
-	const lead = await deps.leads.findByPhone(phoneE164);
-	if (!lead) {
-		// Outbound to a non-lead (e.g. a consultant alert recipient): nothing to record.
-		return { status: 200, body: { ok: true, status: "ignored" } };
-	}
 
-	// Record the manual send as outbound history (Req 19.3).
-	await deps.messages.append({
-		leadId: lead.id,
-		direction: "outbound",
-		content: payload.body,
-		waMessageId,
-		createdAt: new Date(payload.timestamp * 1000),
+	const outcome = await deps.withScope(owner, async (scope) => {
+		// Dedup: our own automated sends (recorded by the committer) and WAHA
+		// retries both already exist under this id — a no-op, so anti-ban is never
+		// double-counted.
+		const existing = await scope.messages.findByWaMessageId(waMessageId);
+		if (existing) {
+			return "duplicate" as const;
+		}
+		const lead = await scope.leads.findByPhone(phoneE164);
+		if (!lead) {
+			// Outbound to a non-lead (e.g. a consultant alert recipient): nothing to
+			// record.
+			return "ignored" as const;
+		}
+
+		// Record the manual send as outbound history (Req 19.3).
+		await scope.messages.append({
+			leadId: lead.id,
+			direction: "outbound",
+			content: payload.body,
+			waMessageId,
+			createdAt: new Date(payload.timestamp * 1000),
+		});
+
+		// Audit (best-effort): a manual send to an opted-out Lead cannot be blocked
+		// (the human typed it directly), but it should be visible.
+		if (lead.optInStatus === "opt_out") {
+			logger.warn(
+				{ event: "inbound.echo_opt_out", leadId: lead.id },
+				"manual outbound to an opted-out lead",
+			);
+		}
+
+		// Count the manual send against the sending number's daily cap so the
+		// anti-ban controller stays accurate. Best-effort: skipped when the seam is
+		// absent (tests).
+		if (scope.antiBan) {
+			await scope.antiBan.recordSend(owner.numberId);
+		}
+		return "accepted" as const;
 	});
 
-	// Audit (best-effort): a manual send to an opted-out Lead cannot be blocked
-	// (the human typed it directly), but it should be visible.
-	if (lead.optInStatus === "opt_out") {
-		logger.warn(
-			{ event: "inbound.echo_opt_out", leadId: lead.id },
-			"manual outbound to an opted-out lead",
-		);
-	}
+	return { status: 200, body: { ok: true, status: outcome } };
+}
 
-	// Count the manual send against the sending number's daily cap so the
-	// anti-ban controller stays accurate. Best-effort: skipped when the seam is
-	// absent (tests) or the session does not map to a registered number.
-	if (deps.antiBan && deps.resolveNumberId) {
-		const numberId = await deps.resolveNumberId(session);
-		if (numberId) {
-			await deps.antiBan.recordSend(numberId);
-		}
+/**
+ * Resolve a raw WhatsApp chat id to one carrying phone digits, resolving a
+ * hidden Linked ID (`<digits>@lid`) through WAHA when needed. Returns `null`
+ * when the `@lid` has no mapping (sender unknown to the session), which makes
+ * the message unattributable.
+ *
+ * Called before any transaction is opened: it is the only network I/O on the
+ * webhook path, and the RLS transaction must not be held across it.
+ */
+async function resolveChatId(
+	deps: WahaWebhookDeps,
+	session: string,
+	chatId: string,
+): Promise<string | null> {
+	if (!chatId.endsWith(LID_SUFFIX)) {
+		return chatId;
 	}
-
-	return { status: 200, body: { ok: true, status: "accepted" } };
+	return deps.lids ? deps.lids.resolveLidToPhone(session, chatId) : null;
 }

@@ -1,10 +1,15 @@
 // CRM_UI lead list (Req 20.1).
 //
 // Side-effect boundary: client component. Lists every lead with its lifecycle
-// state and score (Req 20.1), fetched via React Query from the guarded
-// `/api/crm/leads` endpoint. A temperature filter (with live counts), a text
-// search over phone/source, and sortable score/updated columns make the list
-// scannable at real lead volume. Each row links to the lead detail view.
+// state (Req 20.1), fetched via React Query from the guarded `/api/crm/leads`
+// endpoint. A state filter with live counts, a text search over phone/source,
+// and a sortable "updated" column make the list scannable at real lead volume.
+// Each row links to the lead detail view.
+//
+// The filter used to group ten states into temperature buckets (hot/warm/
+// engaged/…). ADR-003 cut the machine to seven states that ARE the segments an
+// operator acts on, so the pills now map one-to-one onto lifecycle states and
+// the bucket indirection is gone.
 
 "use client";
 
@@ -26,57 +31,37 @@ import type { LifecycleState } from "@/core/types";
 import {
 	LifecycleBadge,
 	PageHeader,
-	ScoreBadge,
 	StatusNote,
 	TableSkeleton,
 } from "./_components/ui";
 import { useLeads } from "./_lib/api";
-import { formatDateTime } from "./_lib/format";
+import { formatDateTime, LIFECYCLE_LABELS } from "./_lib/format";
 import type { LeadSummaryView } from "./_lib/types";
 
 // ---------------------------------------------------------------------------
-// Temperature buckets — group the ten lifecycle states into the handful of
-// actionable segments an operator filters by, reusing the status color ramp.
+// State filter — one pill per lifecycle state (ADR-003), plus "all".
 // ---------------------------------------------------------------------------
 
-type BucketKey =
-	| "all"
-	| "hot"
-	| "warm"
-	| "engaged"
-	| "cadence"
-	| "nurture"
-	| "cold"
-	| "closed";
+type FilterKey = LifecycleState | "all";
 
-/** Which bucket each lifecycle state belongs to. */
-const STATE_BUCKET: Record<LifecycleState, Exclude<BucketKey, "all">> = {
-	HOT: "hot",
-	WARM: "warm",
-	REPLIED: "engaged",
-	QUALIFYING: "engaged",
-	IN_CADENCE: "cadence",
-	MONTHLY_NURTURE: "nurture",
-	COLD_QUEUED: "cold",
-	DISQUALIFIED: "closed",
-	CADENCE_EXHAUSTED: "closed",
-	OPTED_OUT: "closed",
-};
-
-/** The filter pills, in display order. `dot` mirrors the lifecycle dot colors. */
-const BUCKETS: ReadonlyArray<{ key: BucketKey; label: string; dot?: string }> = [
-	{ key: "all", label: "Todos" },
-	{ key: "hot", label: "Quentes", dot: "bg-status-hot" },
-	{ key: "warm", label: "Mornos", dot: "bg-status-warm" },
-	{ key: "engaged", label: "Engajados", dot: "bg-status-info" },
-	{ key: "cadence", label: "Em cadência", dot: "bg-primary" },
-	{ key: "nurture", label: "Nutrição", dot: "bg-status-nurture" },
-	{ key: "cold", label: "Frios", dot: "bg-muted-foreground/50" },
-	{ key: "closed", label: "Encerrados", dot: "bg-muted-foreground/50" },
+/**
+ * The filter pills in workflow order: the lead's journey left to right, with
+ * the outcomes last. `dot` mirrors the lifecycle dot colors from
+ * {@link LifecycleBadge} so the pill and the row badge read as the same thing.
+ */
+const FILTERS: ReadonlyArray<{ key: FilterKey; dot?: string }> = [
+	{ key: "all" },
+	{ key: "QUEUED", dot: "border border-muted-foreground/60" },
+	{ key: "IN_CADENCE", dot: "bg-primary" },
+	{ key: "REPLIED", dot: "bg-status-info" },
+	{ key: "COMPLETED", dot: "bg-muted-foreground/50" },
+	{ key: "WON", dot: "bg-status-won" },
+	{ key: "LOST", dot: "bg-status-lost" },
+	{ key: "OPTED_OUT", dot: "bg-muted-foreground/50" },
 ];
 
-type Counts = Record<BucketKey, number>;
-type SortField = "score" | "updatedAt";
+type Counts = Record<FilterKey, number>;
+type SortField = "updatedAt";
 type Sort = { field: SortField; dir: "asc" | "desc" };
 
 /** A filter pill showing its lead count, doubling as a summary tile. */
@@ -157,33 +142,33 @@ function SortHeader({
 export default function LeadListPage() {
 	const { data: leads, isPending, isError, error } = useLeads();
 
-	const [bucket, setBucket] = useState<BucketKey>("all");
+	const [filter, setFilter] = useState<FilterKey>("all");
 	const [query, setQuery] = useState("");
 	const [sort, setSort] = useState<Sort>({ field: "updatedAt", dir: "desc" });
 
-	// Live counts per bucket, recomputed only when the lead set changes.
+	// Live counts per state, recomputed only when the lead set changes.
 	const counts = useMemo<Counts>(() => {
 		const base: Counts = {
 			all: leads?.length ?? 0,
-			hot: 0,
-			warm: 0,
-			engaged: 0,
-			cadence: 0,
-			nurture: 0,
-			cold: 0,
-			closed: 0,
+			QUEUED: 0,
+			IN_CADENCE: 0,
+			REPLIED: 0,
+			COMPLETED: 0,
+			WON: 0,
+			LOST: 0,
+			OPTED_OUT: 0,
 		};
 		for (const lead of leads ?? []) {
-			base[STATE_BUCKET[lead.lifecycleState]] += 1;
+			base[lead.lifecycleState] += 1;
 		}
 		return base;
 	}, [leads]);
 
-	// The rows actually rendered: bucket filter → text search → sort.
+	// The rows actually rendered: state filter → text search → sort.
 	const visible = useMemo<LeadSummaryView[]>(() => {
 		let rows = leads ?? [];
-		if (bucket !== "all") {
-			rows = rows.filter((lead) => STATE_BUCKET[lead.lifecycleState] === bucket);
+		if (filter !== "all") {
+			rows = rows.filter((lead) => lead.lifecycleState === filter);
 		}
 		const q = query.trim().toLowerCase();
 		if (q) {
@@ -194,15 +179,11 @@ export default function LeadListPage() {
 			);
 		}
 		const dir = sort.dir === "asc" ? 1 : -1;
-		return [...rows].sort((a, b) => {
-			if (sort.field === "score") {
-				return (a.score - b.score) * dir;
-			}
-			return (
-				(new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime()) * dir
-			);
-		});
-	}, [leads, bucket, query, sort]);
+		return [...rows].sort(
+			(a, b) =>
+				(new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime()) * dir,
+		);
+	}, [leads, filter, query, sort]);
 
 	// Toggle direction when re-clicking the active column; otherwise switch
 	// columns and start from the most useful direction (highest / newest first).
@@ -220,10 +201,10 @@ export default function LeadListPage() {
 		<div>
 			<PageHeader
 				title="Leads"
-				description="Todos os leads com seu estado de ciclo de vida e pontuação atuais."
+				description="Todos os leads com seu estado atual no ciclo de vida."
 			/>
 
-			{isPending ? <TableSkeleton columns={5} /> : null}
+			{isPending ? <TableSkeleton columns={4} /> : null}
 			{isError ? <StatusNote tone="error">{error.message}</StatusNote> : null}
 
 			{leads && !hasLeads ? (
@@ -232,17 +213,17 @@ export default function LeadListPage() {
 
 			{hasLeads ? (
 				<>
-					{/* Toolbar: temperature filter + search. */}
+					{/* Toolbar: state filter + search. */}
 					<div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 						<div className="flex flex-wrap gap-1.5">
-							{BUCKETS.map((b) => (
+							{FILTERS.map((f) => (
 								<FilterPill
-									key={b.key}
-									label={b.label}
-									count={counts[b.key]}
-									dot={b.dot}
-									active={bucket === b.key}
-									onClick={() => setBucket(b.key)}
+									key={f.key}
+									label={f.key === "all" ? "Todos" : LIFECYCLE_LABELS[f.key]}
+									count={counts[f.key]}
+									dot={f.dot}
+									active={filter === f.key}
+									onClick={() => setFilter(f.key)}
 								/>
 							))}
 						</div>
@@ -269,12 +250,6 @@ export default function LeadListPage() {
 									<TableHead>Origem</TableHead>
 									<TableHead>Estado</TableHead>
 									<SortHeader
-										label="Pontuação"
-										field="score"
-										sort={sort}
-										onSort={handleSort}
-									/>
-									<SortHeader
 										label="Atualizado"
 										field="updatedAt"
 										sort={sort}
@@ -298,12 +273,6 @@ export default function LeadListPage() {
 										</TableCell>
 										<TableCell>
 											<LifecycleBadge state={lead.lifecycleState} />
-										</TableCell>
-										<TableCell>
-											<ScoreBadge
-												score={lead.score}
-												band={lead.classificationBand}
-											/>
 										</TableCell>
 										<TableCell className="text-muted-foreground">
 											{formatDateTime(lead.updatedAt)}

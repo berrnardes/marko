@@ -19,6 +19,7 @@
 		"db:generate": "drizzle-kit generate",
 		"db:migrate": "drizzle-kit migrate",
 		"db:clear": "tsx --env-file=.env scripts/clear-db.ts",
+		"db:backfill-org": "tsx --env-file=.env scripts/backfill-organization-id.ts",
 		"db:seed-admin": "tsx --env-file=.env scripts/seed-admin.ts"
 	},
 	"dependencies": {

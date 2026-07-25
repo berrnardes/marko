@@ -24,16 +24,18 @@ import {
 	boolean,
 	check,
 	date,
+	index,
 	integer,
 	numeric,
 	pgTable,
+	primaryKey,
 	text,
 	timestamp,
+	unique,
 	uuid,
 } from "drizzle-orm/pg-core";
 
 import type {
-	ClassificationBand,
 	HandoffReason,
 	LifecycleState,
 	Objective,
@@ -41,6 +43,8 @@ import type {
 	TemplateKey,
 	Touch,
 } from "@/core/types";
+
+import { organization } from "./auth-schema";
 
 // ---------------------------------------------------------------------------
 // Enum value tuples
@@ -52,17 +56,14 @@ import type {
 // derived `(typeof tuple)[number]` types are reused as the columns' `$type`, so
 // the inferred row types match the domain exactly.
 
-/** All {@link LifecycleState} values — constrains `leads.lifecycle_state` (Req 14.1, 19.1). */
+/** All {@link LifecycleState} values — constrains `leads.lifecycle_state` (ADR-003). */
 export const lifecycleStates = [
-	"COLD_QUEUED",
+	"QUEUED",
 	"IN_CADENCE",
 	"REPLIED",
-	"QUALIFYING",
-	"HOT",
-	"WARM",
-	"DISQUALIFIED",
-	"CADENCE_EXHAUSTED",
-	"MONTHLY_NURTURE",
+	"COMPLETED",
+	"WON",
+	"LOST",
 	"OPTED_OUT",
 ] as const satisfies readonly LifecycleState[];
 
@@ -77,14 +78,6 @@ export const objectives = [
 	"housing",
 	"investment",
 ] as const satisfies readonly Objective[];
-
-/** All {@link ClassificationBand} values — constrains the nullable `leads.classification_band` (Req 12). */
-export const classificationBands = [
-	"HOT",
-	"WARM",
-	"cold",
-	"DISQUALIFIED",
-] as const satisfies readonly ClassificationBand[];
 
 /** All {@link Touch} values — constrains the nullable `scheduled_jobs.touch` (Req 3). */
 export const touches = [
@@ -155,17 +148,31 @@ function enumCheck(
 	return check(name, sql`${column} IN (${list})`);
 }
 
-/** Build a `column BETWEEN lo AND hi` CHECK constraint. */
-function rangeCheck(
-	name: string,
-	column: AnyPgColumn,
-	lo: number,
-	hi: number,
-): ReturnType<typeof check> {
-	return check(
-		name,
-		sql`${column} BETWEEN ${sql.raw(String(lo))} AND ${sql.raw(String(hi))}`,
-	);
+// ---------------------------------------------------------------------------
+// Tenant scope
+// ---------------------------------------------------------------------------
+
+/**
+ * The tenant-scope column carried by every domain table. Deleting an
+ * organization deletes its domain data with it, so no row can outlive its
+ * tenant.
+ *
+ * This is the one deliberate exception to the "no constraints into the auth
+ * schema" rule stated in the file header (see `leads.assigned_consultant_id`,
+ * which stays FK-less). `organization` is the tenancy root rather than an
+ * incidental auth table: an orphaned row pointing at a deleted organization
+ * would be unreachable data that RLS can never scope, so the constraint is
+ * worth the coupling. Both schema files are generated into the same migration
+ * set (`drizzle.config.ts`), so the FK is resolvable at migration time.
+ *
+ * The column landed nullable in migration 0001 so existing rows could be
+ * backfilled (`scripts/backfill-organization-id.ts`); migration 0002 is what
+ * made it NOT NULL, which is the shape declared here.
+ */
+function organizationId() {
+	return text("organization_id")
+		.notNull()
+		.references((): AnyPgColumn => organization.id, { onDelete: "cascade" });
 }
 
 // ---------------------------------------------------------------------------
@@ -178,14 +185,20 @@ function rangeCheck(
  * database level as well as in the importer (Req 1.4, 2.2). Qualification
  * fields are all nullable so they fill progressively across messages (Req 9.4,
  * 19.2). `lifecycle_state` and `opt_in_status` are CHECK-constrained to their
- * enum values (Req 14.1, 19.1, 15); `score` is constrained to 0–100 (Req 10).
+ * enum values (ADR-003, Req 19.1, 15).
  */
 export const leads = pgTable(
 	"leads",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
-		/** Normalized E.164 phone number; the unique dedup key (Req 1.4, 2.2). */
-		phoneE164: text("phone_e164").notNull().unique(),
+		organizationId: organizationId(),
+		/**
+		 * Normalized E.164 phone number; the dedup key, unique **within an
+		 * organization** (Req 1.4, 2.2; ADR-003). Two tenants may each hold the
+		 * same contact — they are separate leads — but one tenant importing the
+		 * same number twice collapses onto a single row.
+		 */
+		phoneE164: text("phone_e164").notNull(),
 		/** Originating source recorded on the lead (Req 2.1). */
 		source: text("source").notNull(),
 		/**
@@ -197,15 +210,13 @@ export const leads = pgTable(
 		lifecycleState: text("lifecycle_state")
 			.$type<LifecycleState>()
 			.notNull()
-			.default("COLD_QUEUED"),
+			.default("QUEUED"),
 		optInStatus: text("opt_in_status")
 			.$type<OptInStatus>()
 			.notNull()
 			.default("opt_in"),
 		/** Timestamp of the current lawful-basis value, when known (Req 15.4). */
 		optInAt: timestamp("opt_in_at", { withTimezone: true }),
-		/** Qualification score in the inclusive range 0–100 (Req 10). */
-		score: integer("score").notNull().default(0),
 		/** Per-lead block flag re-checked by the send guard (Req 5.3, 18). */
 		blocked: boolean("blocked").notNull().default(false),
 		/**
@@ -220,8 +231,6 @@ export const leads = pgTable(
 		objective: text("objective").$type<Objective>(),
 		hasLanceReserve: boolean("has_lance_reserve"),
 		income: numeric("income", { mode: "number" }),
-		/** Current score-band label, when classified (Req 12). */
-		classificationBand: text("classification_band").$type<ClassificationBand>(),
 		/** Consultant the lead is assigned to after handoff, when any (Req 13). */
 		assignedConsultantId: text("assigned_consultant_id"),
 		lastOutboundAt: timestamp("last_outbound_at", { withTimezone: true }),
@@ -241,12 +250,11 @@ export const leads = pgTable(
 		),
 		enumCheck("leads_opt_in_status_check", table.optInStatus, optInStatuses),
 		enumCheck("leads_objective_check", table.objective, objectives),
-		enumCheck(
-			"leads_classification_band_check",
-			table.classificationBand,
-			classificationBands,
+		unique("leads_organization_id_phone_e164_unique").on(
+			table.organizationId,
+			table.phoneE164,
 		),
-		rangeCheck("leads_score_range_check", table.score, 0, 100),
+		index("leads_organization_id_idx").on(table.organizationId),
 	],
 );
 
@@ -259,20 +267,34 @@ export const leads = pgTable(
  * date it applies to (Req 16), and the warm-up start date driving the ramp
  * (Req 16.3).
  */
-export const whatsappNumbers = pgTable("whatsapp_numbers", {
-	id: uuid("id").primaryKey().defaultRandom(),
-	sessionName: text("session_name").notNull(),
-	msisdn: text("msisdn").notNull(),
-	blocked: boolean("blocked").notNull().default(false),
-	dailySent: integer("daily_sent").notNull().default(0),
-	/** Date the `daily_sent` counter applies to; reset on day change (Req 16). */
-	dailyCounterDate: date("daily_counter_date"),
-	/** Date the warm-up ramp started, for the day-in-ramp calculation (Req 16.3). */
-	warmupStartDate: date("warmup_start_date"),
-	createdAt: timestamp("created_at", { withTimezone: true })
-		.notNull()
-		.defaultNow(),
-});
+export const whatsappNumbers = pgTable(
+	"whatsapp_numbers",
+	{
+		id: uuid("id").primaryKey().defaultRandom(),
+		organizationId: organizationId(),
+		/**
+		 * The WAHA session that owns this number. Globally unique (not scoped to
+		 * the organization): an inbound webhook carries only the session name, so
+		 * it is the key that resolves a delivery to its tenant. Two organizations
+		 * sharing a session name would make that resolution ambiguous.
+		 */
+		sessionName: text("session_name").notNull(),
+		msisdn: text("msisdn").notNull(),
+		blocked: boolean("blocked").notNull().default(false),
+		dailySent: integer("daily_sent").notNull().default(0),
+		/** Date the `daily_sent` counter applies to; reset on day change (Req 16). */
+		dailyCounterDate: date("daily_counter_date"),
+		/** Date the warm-up ramp started, for the day-in-ramp calculation (Req 16.3). */
+		warmupStartDate: date("warmup_start_date"),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.notNull()
+			.defaultNow(),
+	},
+	(table) => [
+		unique("whatsapp_numbers_session_name_unique").on(table.sessionName),
+		index("whatsapp_numbers_organization_id_idx").on(table.organizationId),
+	],
+);
 
 // ---------------------------------------------------------------------------
 // messages
@@ -287,6 +309,11 @@ export const messages = pgTable(
 	"messages",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
+		/**
+		 * Denormalized from the lead: RLS policies filter a single table and
+		 * cannot follow the `lead_id` join.
+		 */
+		organizationId: organizationId(),
 		leadId: uuid("lead_id")
 			.notNull()
 			.references(() => leads.id),
@@ -300,6 +327,7 @@ export const messages = pgTable(
 	},
 	(table) => [
 		enumCheck("messages_direction_check", table.direction, messageDirections),
+		index("messages_organization_id_idx").on(table.organizationId),
 	],
 );
 
@@ -317,6 +345,7 @@ export const scheduledJobs = pgTable(
 	"scheduled_jobs",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
+		organizationId: organizationId(),
 		leadId: uuid("lead_id")
 			.notNull()
 			.references(() => leads.id),
@@ -338,6 +367,7 @@ export const scheduledJobs = pgTable(
 			table.status,
 			scheduledJobStatuses,
 		),
+		index("scheduled_jobs_organization_id_idx").on(table.organizationId),
 	],
 );
 
@@ -350,6 +380,7 @@ export const handoffEvents = pgTable(
 	"handoff_events",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
+		organizationId: organizationId(),
 		leadId: uuid("lead_id")
 			.notNull()
 			.references(() => leads.id),
@@ -360,6 +391,7 @@ export const handoffEvents = pgTable(
 	},
 	(table) => [
 		enumCheck("handoff_events_reason_check", table.reason, handoffReasons),
+		index("handoff_events_organization_id_idx").on(table.organizationId),
 	],
 );
 
@@ -376,6 +408,7 @@ export const complianceRecords = pgTable(
 	"compliance_records",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
+		organizationId: organizationId(),
 		leadId: uuid("lead_id")
 			.notNull()
 			.references(() => leads.id),
@@ -390,6 +423,7 @@ export const complianceRecords = pgTable(
 			table.optInStatus,
 			optInStatuses,
 		),
+		index("compliance_records_organization_id_idx").on(table.organizationId),
 	],
 );
 
@@ -398,15 +432,22 @@ export const complianceRecords = pgTable(
 // ---------------------------------------------------------------------------
 
 /** Summary of a single lead-import run (Req 1.6). */
-export const importReports = pgTable("import_reports", {
-	id: uuid("id").primaryKey().defaultRandom(),
-	createdCount: integer("created_count").notNull().default(0),
-	updatedCount: integer("updated_count").notNull().default(0),
-	rejectedCount: integer("rejected_count").notNull().default(0),
-	createdAt: timestamp("created_at", { withTimezone: true })
-		.notNull()
-		.defaultNow(),
-});
+export const importReports = pgTable(
+	"import_reports",
+	{
+		id: uuid("id").primaryKey().defaultRandom(),
+		organizationId: organizationId(),
+		createdCount: integer("created_count").notNull().default(0),
+		updatedCount: integer("updated_count").notNull().default(0),
+		rejectedCount: integer("rejected_count").notNull().default(0),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.notNull()
+			.defaultNow(),
+	},
+	(table) => [
+		index("import_reports_organization_id_idx").on(table.organizationId),
+	],
+);
 
 // ---------------------------------------------------------------------------
 // import_rows
@@ -422,6 +463,7 @@ export const importRows = pgTable(
 	"import_rows",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
+		organizationId: organizationId(),
 		reportId: uuid("report_id")
 			.notNull()
 			.references(() => importReports.id),
@@ -432,6 +474,7 @@ export const importRows = pgTable(
 	},
 	(table) => [
 		enumCheck("import_rows_outcome_check", table.outcome, importOutcomes),
+		index("import_rows_organization_id_idx").on(table.organizationId),
 	],
 );
 
@@ -441,14 +484,20 @@ export const importRows = pgTable(
 
 /**
  * Operator-editable cadence/nurture message templates. One row per
- * {@link TemplateKey}; a missing row means the built-in default template is
- * used (so a fresh database needs no seed, and "reset to default" deletes the
- * row). `body` carries the template text with `{placeholder}` variables.
+ * {@link TemplateKey} **per organization**; a missing row means the built-in
+ * default template is used (so a fresh organization needs no seed, and "reset
+ * to default" deletes the row). `body` carries the template text with
+ * `{placeholder}` variables.
+ *
+ * `template_key` alone was the primary key before tenancy landed, which made
+ * every organization edit the same global row. The contract migration replaces
+ * it with the composite `(organization_id, template_key)`.
  */
 export const messageTemplates = pgTable(
 	"message_templates",
 	{
-		templateKey: text("template_key").$type<TemplateKey>().primaryKey(),
+		organizationId: organizationId(),
+		templateKey: text("template_key").$type<TemplateKey>().notNull(),
 		body: text("body").notNull(),
 		updatedAt: timestamp("updated_at", { withTimezone: true })
 			.notNull()
@@ -460,6 +509,10 @@ export const messageTemplates = pgTable(
 			table.templateKey,
 			templateKeys,
 		),
+		primaryKey({
+			name: "message_templates_pkey",
+			columns: [table.organizationId, table.templateKey],
+		}),
 	],
 );
 

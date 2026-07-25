@@ -7,7 +7,7 @@
 
 import { NextResponse } from "next/server";
 
-import { denyIfUnauthenticated } from "@/app/api/crm/_lib/guard";
+import { requireOrgSession } from "@/app/api/crm/_lib/guard";
 import { wahaAdmin } from "@/services/waha-admin-client";
 
 // Multi-tenant seam: prefix the generated session name so it becomes
@@ -20,8 +20,8 @@ function generateSessionName(): string {
 }
 
 export async function POST(): Promise<NextResponse> {
-	const denied = await denyIfUnauthenticated();
-	if (denied) return denied;
+	const auth = await requireOrgSession();
+	if ("denied" in auth) return auth.denied;
 
 	const sessionName = generateSessionName();
 	try {

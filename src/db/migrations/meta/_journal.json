@@ -8,6 +8,27 @@
       "when": 1783862855490,
       "tag": "0000_true_the_watchers",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1784983685537,
+      "tag": "0001_expand_organization_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784983785147,
+      "tag": "0002_contract_organization_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1785009965546,
+      "tag": "0003_bumpy_valeria_richards",
+      "breakpoints": true
     }
   ]
 }

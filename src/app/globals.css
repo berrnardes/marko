@@ -12,7 +12,7 @@
  * off-white surface (#f0eee9) as the page background. The landing page uses
  * that mapping directly; inside the CRM shell the `.app-theme` overrides swap
  * the roles so the green is `primary` (the action color) and add the
- * `--status-*` lead-temperature ramp. The extra `ink` / `surface` /
+ * `--status-*` lead-state ramp. The extra `ink` / `surface` /
  * `surface-card` aliases keep the landing page's utilities working unchanged.
  *
  * `@theme inline` keeps the font tokens pointing at the `next/font` CSS
@@ -40,10 +40,9 @@
 	--color-chart-3: var(--chart-3);
 	--color-chart-2: var(--chart-2);
 	--color-chart-1: var(--chart-1);
-	--color-status-hot: var(--status-hot);
-	--color-status-warm: var(--status-warm);
 	--color-status-info: var(--status-info);
-	--color-status-nurture: var(--status-nurture);
+	--color-status-won: var(--status-won);
+	--color-status-lost: var(--status-lost);
 	--color-ring: var(--ring);
 	--color-input: var(--input);
 	--color-border: var(--border);
@@ -96,9 +95,11 @@ html {
  * pages. Inside `.app-theme` the brand green is `primary` (buttons, links,
  * active states, focus) and `secondary` drops to a quiet neutral fill — the
  * landing page keeps the original `:root` mapping.
- * The `--status-*` ramp carries lead-temperature semantics: hot/warm are warm
- * hues, engaged states are blue, nurture is violet; terminal states reuse the
- * muted grays.
+ * The `--status-*` ramp carries lead-STATE semantics (ADR-003), not
+ * temperature: blue marks the one state that wants a human (`REPLIED`), green
+ * and red mark the recorded outcomes (`WON`/`LOST`). The states that need no
+ * attention — queued, in cadence, completed, opted out — reuse the primary and
+ * muted grays, so color is spent only where it changes what someone does.
  */
 .app-theme {
 	color-scheme: light;
@@ -106,10 +107,9 @@ html {
 	--primary-foreground: #ffffff;
 	--secondary: #e6e3da;
 	--secondary-foreground: #212121;
-	--status-hot: #c2410c;
-	--status-warm: #b45309;
 	--status-info: #2563eb;
-	--status-nurture: #7c3aed;
+	--status-won: #15803d;
+	--status-lost: #b91c1c;
 }
 
 /*
@@ -130,10 +130,9 @@ html {
 	--primary-foreground: #071412;
 	--secondary: #292b25;
 	--secondary-foreground: #f3f1eb;
-	--status-hot: #fb923c;
-	--status-warm: #fbbf24;
 	--status-info: #60a5fa;
-	--status-nurture: #a78bfa;
+	--status-won: #4ade80;
+	--status-lost: #f87171;
 	--muted: #292b25;
 	--muted-foreground: #b6b1a7;
 	--accent: #2f342d;

@@ -4,8 +4,9 @@
 
 import { NextResponse, type NextRequest } from "next/server";
 
-import { denyIfUnauthenticated } from "@/app/api/crm/_lib/guard";
+import { requireOrgSession } from "@/app/api/crm/_lib/guard";
 import { DrizzleNumberRepository } from "@/db/number-repository";
+import { withOrg } from "@/db/with-org";
 import { wahaAdmin } from "@/services/waha-admin-client";
 
 type Params = { params: Promise<{ numberId: string }> };
@@ -14,8 +15,8 @@ export async function PATCH(
 	request: NextRequest,
 	{ params }: Params,
 ): Promise<NextResponse> {
-	const denied = await denyIfUnauthenticated();
-	if (denied) return denied;
+	const auth = await requireOrgSession();
+	if ("denied" in auth) return auth.denied;
 
 	const { numberId } = await params;
 	const body = (await request.json()) as { blocked?: boolean };
@@ -27,8 +28,12 @@ export async function PATCH(
 		);
 	}
 
-	const repo = new DrizzleNumberRepository();
-	await repo.setBlocked(numberId, body.blocked);
+	// Bound outside the closure so the `boolean` narrowing above survives into it.
+	const blocked = body.blocked;
+	const { organizationId } = auth.org;
+	await withOrg(organizationId, (tx) =>
+		new DrizzleNumberRepository(organizationId, tx).setBlocked(numberId, blocked),
+	);
 	return NextResponse.json({ ok: true });
 }
 
@@ -36,19 +41,27 @@ export async function DELETE(
 	_request: NextRequest,
 	{ params }: Params,
 ): Promise<NextResponse> {
-	const denied = await denyIfUnauthenticated();
-	if (denied) return denied;
+	const auth = await requireOrgSession();
+	if ("denied" in auth) return auth.denied;
 
 	const { numberId } = await params;
-	const repo = new DrizzleNumberRepository();
+	const { organizationId } = auth.org;
+
+	// Three steps, deliberately in three phases rather than one transaction: the
+	// WAHA call in the middle is network I/O and must not hold a pooled
+	// connection open (each `withOrg` is its own transaction, ADR-004).
+	const record = await withOrg(organizationId, (tx) =>
+		new DrizzleNumberRepository(organizationId, tx).findById(numberId),
+	);
 
 	// Free the underlying WAHA session so a removed number leaves no orphan.
 	// Best-effort: the CRM row is deleted even if WAHA is unreachable.
-	const record = await repo.findById(numberId);
 	if (record) {
 		await wahaAdmin.logoutAndDelete(record.sessionName);
 	}
 
-	await repo.delete(numberId);
+	await withOrg(organizationId, (tx) =>
+		new DrizzleNumberRepository(organizationId, tx).delete(numberId),
+	);
 	return NextResponse.json({ ok: true });
 }

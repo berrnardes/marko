@@ -14,7 +14,7 @@
 // single row-locked transaction so concurrent sends from the same number cannot
 // race the counter (Req 16.1, 16.2).
 
-import { eq } from "drizzle-orm";
+import { and, eq, sql, type SQL } from "drizzle-orm";
 
 import { db, type Database } from "@/db/client";
 import { whatsappNumbers } from "@/db/schema";
@@ -77,14 +77,30 @@ function toRecord(row: NumberRow): NumberRecord {
 }
 
 /**
- * Concrete {@link NumberRepository} over Drizzle/PostgreSQL. Stateless beyond
- * the injected database client; safe to construct per request.
+ * Concrete {@link NumberRepository} over Drizzle/PostgreSQL, bound to ONE
+ * organization at construction. A tenant only ever sees, sends from, blocks, or
+ * deletes its own registered numbers. Stateless beyond the injected org +
+ * database client; safe to construct per request.
+ *
+ * The one lookup that cannot be org-scoped — resolving an inbound WAHA session
+ * to the organization that owns it — lives outside this class as
+ * {@link findNumberBySessionName}.
  */
 export class DrizzleNumberRepository implements NumberRepository {
+	private readonly organizationId: string;
 	private readonly database: Database;
 
-	constructor(database: Database = db) {
+	constructor(organizationId: string, database: Database = db) {
+		this.organizationId = organizationId;
 		this.database = database;
+	}
+
+	/** Narrow `condition` to this repository's organization. */
+	private scoped(condition: SQL): SQL {
+		return and(
+			eq(whatsappNumbers.organizationId, this.organizationId),
+			condition,
+		) as SQL;
 	}
 
 	/** @inheritdoc */
@@ -92,13 +108,16 @@ export class DrizzleNumberRepository implements NumberRepository {
 		const [row] = await this.database
 			.select()
 			.from(whatsappNumbers)
-			.where(eq(whatsappNumbers.id, numberId));
+			.where(this.scoped(eq(whatsappNumbers.id, numberId)));
 		return row ? toRecord(row) : null;
 	}
 
 	/** @inheritdoc */
 	async listAll(): Promise<NumberRecord[]> {
-		const rows = await this.database.select().from(whatsappNumbers);
+		const rows = await this.database
+			.select()
+			.from(whatsappNumbers)
+			.where(eq(whatsappNumbers.organizationId, this.organizationId));
 		return rows.map(toRecord);
 	}
 
@@ -109,7 +128,7 @@ export class DrizzleNumberRepository implements NumberRepository {
 		const rows = await this.database
 			.select()
 			.from(whatsappNumbers)
-			.where(eq(whatsappNumbers.blocked, false));
+			.where(this.scoped(eq(whatsappNumbers.blocked, false)));
 		return rows.map(toRecord);
 	}
 
@@ -121,6 +140,7 @@ export class DrizzleNumberRepository implements NumberRepository {
 		const [row] = await this.database
 			.insert(whatsappNumbers)
 			.values({
+				organizationId: this.organizationId,
 				sessionName: record.sessionName,
 				msisdn: record.msisdn,
 				warmupStartDate: toDayString(new Date()),
@@ -133,7 +153,7 @@ export class DrizzleNumberRepository implements NumberRepository {
 	async delete(numberId: string): Promise<void> {
 		await this.database
 			.delete(whatsappNumbers)
-			.where(eq(whatsappNumbers.id, numberId));
+			.where(this.scoped(eq(whatsappNumbers.id, numberId)));
 	}
 
 	/** @inheritdoc */
@@ -141,7 +161,7 @@ export class DrizzleNumberRepository implements NumberRepository {
 		await this.database
 			.update(whatsappNumbers)
 			.set({ blocked })
-			.where(eq(whatsappNumbers.id, numberId));
+			.where(this.scoped(eq(whatsappNumbers.id, numberId)));
 	}
 
 	/** @inheritdoc */
@@ -152,7 +172,7 @@ export class DrizzleNumberRepository implements NumberRepository {
 			const [row] = await tx
 				.select()
 				.from(whatsappNumbers)
-				.where(eq(whatsappNumbers.id, numberId))
+				.where(this.scoped(eq(whatsappNumbers.id, numberId)))
 				.for("update");
 			if (!row) {
 				throw new NumberNotFoundError(numberId);
@@ -164,7 +184,7 @@ export class DrizzleNumberRepository implements NumberRepository {
 			await tx
 				.update(whatsappNumbers)
 				.set({ dailySent: newCount, dailyCounterDate: onDay })
-				.where(eq(whatsappNumbers.id, numberId));
+				.where(this.scoped(eq(whatsappNumbers.id, numberId)));
 			return newCount;
 		});
 	}
@@ -174,6 +194,84 @@ export class DrizzleNumberRepository implements NumberRepository {
 		await this.database
 			.update(whatsappNumbers)
 			.set({ dailySent: 0, dailyCounterDate: toDayString(on) })
-			.where(eq(whatsappNumbers.id, numberId));
+			.where(this.scoped(eq(whatsappNumbers.id, numberId)));
 	}
+}
+
+/**
+ * Resolve an inbound WAHA session name to the number row that owns it —
+ * deliberately NOT org-scoped, and the only query in the data layer that is.
+ *
+ * This is the chicken-and-egg lookup at the inbound boundary: a WAHA webhook
+ * delivery identifies itself only by `session`, so the organization is unknown
+ * until this resolves. `whatsapp_numbers.session_name` carries a GLOBAL unique
+ * constraint precisely so this returns at most one row and one organization.
+ * Every subsequent read/write on that delivery goes through repositories bound
+ * to the `organizationId` returned here.
+ *
+ * Under RLS (ADR-004) the plain table read below would return nothing, because
+ * no tenant context can exist yet. So once the policies are installed this goes
+ * through `app.resolve_session_org()` — a `SECURITY DEFINER` function owned by
+ * a `BYPASSRLS` role that exposes exactly this one pair of columns and nothing
+ * else. Which path is taken is decided by probing for the function once per
+ * process, so the code works both before and after
+ * `docs/ops/rls-policies.sql` is applied.
+ *
+ * @returns The owning organization and domain `numberId`, or `null` when no
+ *   registered number claims the session (the caller acks and drops).
+ */
+export async function findNumberBySessionName(
+	sessionName: string,
+	database: Database = db,
+): Promise<{ numberId: string; organizationId: string } | null> {
+	if (await hasSessionOrgResolver(database)) {
+		const result = await database.execute<{
+			number_id: string;
+			organization_id: string;
+		}>(sql`select * from app.resolve_session_org(${sessionName})`);
+		const row = result.rows[0];
+		return row
+			? { numberId: row.number_id, organizationId: row.organization_id }
+			: null;
+	}
+
+	const [row] = await database
+		.select({
+			numberId: whatsappNumbers.id,
+			organizationId: whatsappNumbers.organizationId,
+		})
+		.from(whatsappNumbers)
+		.where(eq(whatsappNumbers.sessionName, sessionName))
+		.limit(1);
+	return row ?? null;
+}
+
+/** Cached answer to "have the RLS policies been installed yet?", per process. */
+let sessionOrgResolverProbe: Promise<boolean> | undefined;
+
+/**
+ * Whether `app.resolve_session_org()` exists in this database.
+ *
+ * Probed once per process rather than assumed, because the application code and
+ * `docs/ops/rls-policies.sql` are deployed independently: the function is
+ * created by hand at the RLS cutover, and inbound must keep working on both
+ * sides of it. A failed probe is not cached, so the first delivery after the
+ * cutover picks up the new path without a restart.
+ *
+ * DELETE this probe — and the fallback branch above — once RLS is live
+ * everywhere; the direct table read is dead code from that point on.
+ */
+async function hasSessionOrgResolver(database: Database): Promise<boolean> {
+	if (!sessionOrgResolverProbe) {
+		sessionOrgResolverProbe = database
+			.execute<{ present: boolean }>(
+				sql`select to_regprocedure('app.resolve_session_org(text)') is not null as present`,
+			)
+			.then((result) => result.rows[0]?.present === true)
+			.catch(() => {
+				sessionOrgResolverProbe = undefined;
+				return false;
+			});
+	}
+	return sessionOrgResolverProbe;
 }

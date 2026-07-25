@@ -69,8 +69,8 @@ function appendField(
 /**
  * Build the PT-BR consultant alert body from a Lead snapshot and the handoff
  * reason (Req 13). Pure over its inputs so it is unit-testable. Includes the
- * Lead's phone, score/band, whatever qualification data is already on file, and
- * a deep link to the Lead in the CRM when a base URL is configured.
+ * Lead's phone, whatever qualification data is already on file, and a deep link
+ * to the Lead in the CRM when a base URL is configured.
  */
 export function buildHandoffNotificationText(
 	lead: LeadSnapshot,
@@ -82,7 +82,6 @@ export function buildHandoffNotificationText(
 		"",
 		`Motivo: ${REASON_LABELS[reason]}`,
 		`• Telefone: ${lead.phoneE164}`,
-		`• Pontuação: ${lead.score}${lead.classificationBand ? ` (${lead.classificationBand})` : ""}`,
 	];
 
 	const q = lead.qualification;

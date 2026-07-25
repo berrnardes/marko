@@ -67,11 +67,11 @@ function fakeScheduledJobs(
 	};
 }
 
-const okToHot: TransitionResult = { ok: true, from: "REPLIED", to: "HOT" };
+const okToHot: TransitionResult = { ok: true, from: "REPLIED", to: "REPLIED" };
 const rejectedAlreadyHot: TransitionResult = {
 	ok: false,
 	reason: "invalid_transition",
-	state: "HOT",
+	state: "REPLIED",
 };
 
 describe("HandoffManager", () => {
@@ -88,7 +88,7 @@ describe("HandoffManager", () => {
 
 		await manager.handoff(LEAD_ID, "replied");
 
-		expect(lifecycle.apply).toHaveBeenCalledWith(LEAD_ID, "HOT");
+		expect(lifecycle.apply).toHaveBeenCalledWith(LEAD_ID, "REPLIED");
 		expect(handoffEvents.appendEvent).toHaveBeenCalledWith(
 			LEAD_ID,
 			"replied",

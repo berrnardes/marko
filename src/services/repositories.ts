@@ -8,7 +8,6 @@
 // layer exists.
 
 import type {
-	ClassificationBand,
 	HandoffReason,
 	LeadSnapshot,
 	LifecycleState,
@@ -134,18 +133,12 @@ export interface LeadRepository {
 	findById(leadId: string): Promise<LeadSnapshot | null>;
 	/** Look up a Lead by its normalized E.164 number (Req 1.4, 7.1). */
 	findByPhone(phoneE164: string): Promise<LeadSnapshot | null>;
-	/** Create a new Lead in `COLD_QUEUED` recording its source (Req 1.5, 2.1). */
+	/** Create a new Lead in `QUEUED` recording its source (Req 1.5, 2.1). */
 	create(input: NewLeadInput): Promise<LeadSnapshot>;
 	/** Progressively persist extracted qualification fields (Req 9.5). */
 	updateQualification(
 		leadId: string,
 		patch: QualificationFieldsPatch,
-	): Promise<LeadSnapshot>;
-	/** Persist a recomputed score and its band (Req 11.1, 12, 19.4). */
-	updateScore(
-		leadId: string,
-		score: number,
-		band: ClassificationBand,
 	): Promise<LeadSnapshot>;
 	/**
 	 * Compare-and-set the lifecycle state for optimistic concurrency: applies
@@ -303,18 +296,20 @@ export interface ConsultantNotificationSettings {
 
 /**
  * Boundary over the auth membership tables for consultant handoff alerts. A
- * recipient is a member with alerts enabled whose user has a *verified*
- * WhatsApp number — an unverified phone is never alerted, so a typo can't
- * route lead alerts to a stranger. Writes touch only the domain-owned columns
- * the application added to those tables (`user.phone_e164`,
+ * recipient is a member of the lead's organization with alerts enabled whose
+ * user has a *verified* WhatsApp number — an unverified phone is never alerted,
+ * so a typo can't route lead alerts to a stranger. Writes touch only the
+ * domain-owned columns the application added to those tables (`user.phone_e164`,
  * `user.phone_verified_at`, `member.receives_handoff_alerts`); everything
- * Better Auth manages stays Better Auth's. Until `tenant_id` lands on the
- * domain tables the recipient list is org-agnostic; it then becomes scoped to
- * the lead's org.
+ * Better Auth manages stays Better Auth's.
  */
 export interface ConsultantRepository {
-	/** Distinct verified E.164 numbers of members opted into handoff alerts. */
-	listHandoffAlertRecipients(): Promise<string[]>;
+	/**
+	 * Distinct verified E.164 numbers of the organization's members who are
+	 * opted into handoff alerts. Scoped by organization so a lead never alerts
+	 * another tenant's consultants.
+	 */
+	listHandoffAlertRecipients(organizationId: string): Promise<string[]>;
 	/**
 	 * Read one member's alert settings, or `null` when the user has no
 	 * membership in the organization.

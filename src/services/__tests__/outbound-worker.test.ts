@@ -38,10 +38,8 @@ function makeLead(overrides: Partial<LeadSnapshot> = {}): LeadSnapshot {
 		lifecycleState: "IN_CADENCE",
 		optInStatus: "opt_in",
 		optInAt: null,
-		score: 0,
 		blocked: false,
 		unreachableAt: null,
-		classificationBand: null,
 		qualification: {
 			segment: null,
 			creditValue: null,
@@ -212,7 +210,7 @@ describe("OutboundWorker.process", () => {
 		const worker = createOutboundWorker({
 			// The lead replied and was handed off (→ HOT) after the cadence touch
 			// enqueued this send but before the choke point drained it.
-			leads: leadRepoReturning(makeLead({ lifecycleState: "HOT" })),
+			leads: leadRepoReturning(makeLead({ lifecycleState: "REPLIED" })),
 			antiBan,
 			waha,
 			commit: committer,
@@ -240,7 +238,7 @@ describe("OutboundWorker.process", () => {
 		// the second read (post-pacing) must see HOT and drop before the send.
 		const leads = leadRepoSequence([
 			makeLead({ lifecycleState: "IN_CADENCE" }),
-			makeLead({ lifecycleState: "HOT" }),
+			makeLead({ lifecycleState: "REPLIED" }),
 		]);
 		const worker = createOutboundWorker({
 			leads,

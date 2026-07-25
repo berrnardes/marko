@@ -6,7 +6,7 @@
 // current value is also denormalized onto the lead by the Compliance_Manager
 // via the `LeadRepository`. This repository only ever appends and reads.
 
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 
 import type { OptInStatus } from "@/core/types";
 import { db, type Database } from "@/db/client";
@@ -29,13 +29,16 @@ function toRecord(row: ComplianceRow): ComplianceRecord {
 }
 
 /**
- * Concrete {@link ComplianceRepository} over Drizzle/PostgreSQL. Stateless
- * beyond the injected database client; safe to construct per request.
+ * Concrete {@link ComplianceRepository} over Drizzle/PostgreSQL, bound to ONE
+ * organization at construction. Stateless beyond the injected org + database
+ * client; safe to construct per request.
  */
 export class DrizzleComplianceRepository implements ComplianceRepository {
+	private readonly organizationId: string;
 	private readonly database: Database;
 
-	constructor(database: Database = db) {
+	constructor(organizationId: string, database: Database = db) {
+		this.organizationId = organizationId;
 		this.database = database;
 	}
 
@@ -47,7 +50,12 @@ export class DrizzleComplianceRepository implements ComplianceRepository {
 	): Promise<ComplianceRecord> {
 		const [row] = await this.database
 			.insert(complianceRecords)
-			.values({ leadId, optInStatus: status, recordedAt: at })
+			.values({
+				organizationId: this.organizationId,
+				leadId,
+				optInStatus: status,
+				recordedAt: at,
+			})
 			.returning();
 		return toRecord(row);
 	}
@@ -57,7 +65,12 @@ export class DrizzleComplianceRepository implements ComplianceRepository {
 		const rows = await this.database
 			.select()
 			.from(complianceRecords)
-			.where(eq(complianceRecords.leadId, leadId))
+			.where(
+				and(
+					eq(complianceRecords.organizationId, this.organizationId),
+					eq(complianceRecords.leadId, leadId),
+				),
+			)
 			.orderBy(asc(complianceRecords.recordedAt));
 		return rows.map(toRecord);
 	}

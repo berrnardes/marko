@@ -1,9 +1,8 @@
 // CRM_UI presentational components (task 22.3).
 //
-// Small, reusable visual building blocks over the shadcn/ui primitives:
-// lifecycle and classification badges, the score pill, page headers, async
-// state placeholders, and the destructive-confirmation button. Presentation
-// only — no data fetching.
+// Small, reusable visual building blocks over the shadcn/ui primitives: the
+// lifecycle badge, page headers, async state placeholders, and the
+// destructive-confirmation button. Presentation only — no data fetching.
 
 "use client";
 
@@ -22,37 +21,33 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { ClassificationBand, LifecycleState } from "@/core/types";
+import type { LifecycleState } from "@/core/types";
 
 import { LIFECYCLE_LABELS } from "../_lib/format";
 
 /**
- * Dot + label tone per lifecycle state (Req 20.1). One temperature language
- * across the CRM: hot/warm are warm hues, engaged states (replied, qualifying)
- * are blue, the running cadence is the brand primary, nurture is violet, and
- * queued/terminal states stay quiet gray — a hollow dot for "not started yet",
- * a filled one for "finished".
+ * Dot + label tone per lifecycle state (ADR-003, Req 20.1).
+ *
+ * Color is spent only where it changes what someone does. `REPLIED` is the one
+ * state waiting on a human, so it is the only blue; `WON`/`LOST` carry the
+ * recorded outcome. Everything the system is handling by itself — queued, in
+ * cadence, completed — reads as brand primary or quiet gray, with a hollow dot
+ * for "not started yet" and a filled one for "finished".
  */
 const LIFECYCLE_STYLES: Record<LifecycleState, { dot: string; text: string }> =
 	{
-		COLD_QUEUED: {
+		QUEUED: {
 			dot: "border border-muted-foreground/60 bg-transparent",
 			text: "text-muted-foreground",
 		},
 		IN_CADENCE: { dot: "bg-primary", text: "text-foreground" },
-		REPLIED: { dot: "bg-status-info", text: "text-foreground" },
-		QUALIFYING: { dot: "bg-status-info", text: "text-foreground" },
-		HOT: { dot: "bg-status-hot", text: "text-status-hot" },
-		WARM: { dot: "bg-status-warm", text: "text-status-warm" },
-		DISQUALIFIED: {
+		REPLIED: { dot: "bg-status-info", text: "text-status-info" },
+		COMPLETED: {
 			dot: "bg-muted-foreground/50",
 			text: "text-muted-foreground",
 		},
-		CADENCE_EXHAUSTED: {
-			dot: "bg-muted-foreground/50",
-			text: "text-muted-foreground",
-		},
-		MONTHLY_NURTURE: { dot: "bg-status-nurture", text: "text-foreground" },
+		WON: { dot: "bg-status-won", text: "text-status-won" },
+		LOST: { dot: "bg-status-lost", text: "text-status-lost" },
 		OPTED_OUT: {
 			dot: "bg-muted-foreground/50",
 			text: "text-muted-foreground",
@@ -71,31 +66,6 @@ export function LifecycleBadge({ state }: { state: LifecycleState }) {
 				className={`size-1.5 shrink-0 rounded-full ${style.dot}`}
 			/>
 			{LIFECYCLE_LABELS[state]}
-		</span>
-	);
-}
-
-/** A pill showing a lead's score, tinted by band (Req 20.1). */
-export function ScoreBadge({
-	score,
-	band,
-}: {
-	score: number;
-	band: ClassificationBand | null;
-}) {
-	const tint =
-		band === "HOT"
-			? "bg-status-hot/15 text-status-hot"
-			: band === "WARM"
-				? "bg-status-warm/15 text-status-warm"
-				: band === "cold"
-					? "bg-status-info/10 text-status-info"
-					: "bg-muted text-muted-foreground";
-	return (
-		<span
-			className={`inline-flex min-w-9 items-center justify-center rounded-md px-2 py-0.5 text-sm font-semibold tabular-nums ${tint}`}
-		>
-			{score}
 		</span>
 	);
 }

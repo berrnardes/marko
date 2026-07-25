@@ -8,7 +8,7 @@
 import { NextResponse } from "next/server";
 
 import type { LeadSnapshot } from "@/core/types";
-import { requireMemberSession } from "@/app/api/crm/settings/_lib/session";
+import { requireOrgSession } from "@/app/api/crm/_lib/guard";
 import { settingsWiring } from "@/app/api/crm/settings/_lib/wiring";
 import { buildHandoffNotificationText } from "@/services/handoff-notifier";
 import { logger } from "@/logger";
@@ -20,13 +20,11 @@ function sampleLead(now: Date): LeadSnapshot {
 		phoneE164: "+5547999990000",
 		source: "exemplo",
 		displayName: null,
-		lifecycleState: "HOT",
+		lifecycleState: "REPLIED",
 		optInStatus: "opt_in",
 		optInAt: now,
-		score: 75,
 		blocked: false,
 		unreachableAt: null,
-		classificationBand: "HOT",
 		qualification: {
 			segment: "imóvel",
 			creditValue: 300_000,
@@ -43,11 +41,11 @@ function sampleLead(now: Date): LeadSnapshot {
 }
 
 export async function POST(): Promise<NextResponse> {
-	const auth = await requireMemberSession();
+	const auth = await requireOrgSession();
 	if ("denied" in auth) return auth.denied;
-	const { userId, organizationId } = auth.member;
+	const { userId, organizationId } = auth.org;
 
-	const { consultants, waha, resolveFromNumberId } = settingsWiring();
+	const { consultants, waha, resolveFromNumberId } = settingsWiring(auth.org.organizationId);
 	const settings = await consultants.getNotificationSettings(
 		userId,
 		organizationId,

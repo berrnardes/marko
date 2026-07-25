@@ -19,9 +19,9 @@
 //   4. T5 special case (Req 4.6, 6.1): when T5 fires for a lead the guard let
 //      through (i.e. it reached T5 without an earlier reply, opt-out, or
 //      block), after enqueuing the breakup send the worker transitions the lead
-//      to `CADENCE_EXHAUSTED` (Req 6.1) and triggers the monthly nurture flow
-//      (the Nurture_Scheduler's `MONTHLY_NURTURE` transition + scheduling of
-//      Req 6.2 is reached through the injected `NurtureTrigger` seam).
+//      to `COMPLETED` (ADR-003), which ends automated outreach. `COMPLETED` is
+//      NOT terminal: a late reply still moves the lead to `REPLIED`, and the
+//      consultant can re-enqueue it.
 //
 // Side-effect boundary: all I/O flows through injected INTERFACE dependencies
 // only — never concrete Drizzle/DB or pg-boss code:
@@ -30,11 +30,7 @@
 //   - `OutboundSendQueue` — enqueue the rendered send onto the choke point;
 //   - `CadenceScheduler`  — cancel the lead's remaining touches on a stop
 //                           condition (Req 5.2);
-//   - `LifecycleManager`  — set `CADENCE_EXHAUSTED` after T5 (Req 6.1);
-//   - `NurtureTrigger`    — trigger the monthly nurture flow (Req 6.2), a seam
-//                           the future Nurture_Scheduler (task 17) satisfies, so
-//                           this worker depends on an interface rather than the
-//                           concrete scheduler.
+//   - `LifecycleManager`  — set `COMPLETED` after T5 (Req 6.1).
 // The send-guard decision and the touch templates are pure (`@/core`); none of
 // that logic is reimplemented here.
 
@@ -56,30 +52,6 @@ import type {
 } from "@/services/repositories";
 
 // ---------------------------------------------------------------------------
-// Nurture trigger seam
-// ---------------------------------------------------------------------------
-
-/**
- * The minimal seam the Cadence_Worker needs to hand a lead that exhausted the
- * cadence to the monthly nurture flow (Req 6.1 → 6.2). It is intentionally a
- * narrow interface — just the start call — so the worker depends on an
- * interface rather than the concrete `Nurture_Scheduler` (task 17), which does
- * not exist yet.
- *
- * Its `startMonthly` signature matches the design's
- * `NurtureScheduler.startMonthly(leadId)`, so when the `Nurture_Scheduler` is
- * implemented it satisfies this seam directly with no adapter.
- */
-export interface NurtureTrigger {
-	/**
-	 * Begin the monthly nurture flow for a lead that has entered
-	 * `CADENCE_EXHAUSTED`: the implementation transitions the lead to
-	 * `MONTHLY_NURTURE` and schedules recurring monthly outreach (Req 6.2).
-	 */
-	startMonthly(leadId: string): Promise<void>;
-}
-
-// ---------------------------------------------------------------------------
 // Outcome
 // ---------------------------------------------------------------------------
 
@@ -94,15 +66,14 @@ export interface NurtureTrigger {
  *     count cancelled (Req 5.2–5.4).
  *   - `"sent"`      — the touch was rendered and enqueued onto the outbound
  *     choke point; `jobId` is the enqueued send's queue id (Req 4.1–4.5).
- *   - `"exhausted"` — the T5 breakup was enqueued and, the lead having reached
+ *   - `"completed"` — the T5 breakup was enqueued and, the lead having reached
  *     T5 without an earlier reply/opt-out/block, the lead was moved to
- *     `CADENCE_EXHAUSTED` and the monthly nurture flow was triggered (Req 4.6,
- *     6.1, 6.2). `jobId` is the breakup send's queue id.
+ *     `COMPLETED` (Req 4.6, 6.1). `jobId` is the breakup send's queue id.
  */
 export type CadenceTouchOutcome =
 	| { status: "skipped"; leadId: string; touch: Touch; cancelledJobs: number }
 	| { status: "sent"; leadId: string; touch: Touch; jobId: string }
-	| { status: "exhausted"; leadId: string; touch: "T5"; jobId: string };
+	| { status: "completed"; leadId: string; touch: "T5"; jobId: string };
 
 // ---------------------------------------------------------------------------
 // Worker interface
@@ -138,10 +109,8 @@ export interface CadenceWorkerConfig {
 	cadence: CadenceScheduler;
 	/** Enqueue boundary onto the outbound choke point (never send inline). */
 	outbound: OutboundSendQueue;
-	/** Lifecycle manager used to set `CADENCE_EXHAUSTED` after T5 (Req 6.1). */
+	/** Lifecycle manager used to set `COMPLETED` after T5 (Req 6.1). */
 	lifecycle: LifecycleManager;
-	/** Seam that hands an exhausted lead to the monthly nurture flow (Req 6.2). */
-	nurture: NurtureTrigger;
 	/**
 	 * Mirror table for the lead's scheduled-job rows. When provided, the worker
 	 * advances the firing touch's mirror row out of `pending` after acting —
@@ -169,15 +138,14 @@ export interface CadenceWorkerConfig {
  * the pure State Guard (`evaluateSendGuard`), the pure touch rendering
  * (`MessageGenerator`), the outbound enqueue seam (`OutboundSendQueue`), the
  * remaining-touch cancellation (`CadenceScheduler`), and the T5 exhaustion path
- * (`LifecycleManager` + `NurtureTrigger`) into the design's State-Guard flow.
- * Holds no state beyond its dependencies.
+ * (`LifecycleManager`) into the design's State-Guard flow. Holds no state
+ * beyond its dependencies.
  */
 export class CadenceWorkerService implements CadenceWorker {
 	private readonly leads: LeadRepository;
 	private readonly cadence: CadenceScheduler;
 	private readonly outbound: OutboundSendQueue;
 	private readonly lifecycle: LifecycleManager;
-	private readonly nurture: NurtureTrigger;
 	private readonly messages: MessageGenerator;
 	private readonly scheduledJobs?: ScheduledJobRepository;
 
@@ -186,7 +154,6 @@ export class CadenceWorkerService implements CadenceWorker {
 		this.cadence = deps.cadence;
 		this.outbound = deps.outbound;
 		this.lifecycle = deps.lifecycle;
-		this.nurture = deps.nurture;
 		this.messages = deps.messages ?? messageGenerator;
 		this.scheduledJobs = deps.scheduledJobs;
 	}
@@ -239,16 +206,15 @@ export class CadenceWorkerService implements CadenceWorker {
 		await this.markTouch(leadId, touch, "done");
 
 		// 4. T5 reached without an earlier reply/opt-out/block (the guard let it
-		//    through, Req 4.6): the breakup message is now enqueued; exhaust the
-		//    cadence (Req 6.1) and hand the lead to the monthly nurture flow
-		//    (Req 6.2, via the injected seam). Nurture is triggered only once the
-		//    lead has actually entered `CADENCE_EXHAUSTED`, so a rejected
-		//    transition (e.g. a concurrent move) never spuriously starts nurture.
+		//    through, Req 4.6): the breakup message is now enqueued, so the lead
+		//    has received the whole cadence and stops here (Req 6.1). Before the
+		//    beta scope cuts (ADR-002) this handed the lead to a second, parallel
+		//    monthly cadence; now `COMPLETED` is the end of automated outreach and
+		//    the lead waits for a human or a late reply (ADR-003).
 		if (touch === "T5") {
-			const result = await this.lifecycle.apply(leadId, "CADENCE_EXHAUSTED");
+			const result = await this.lifecycle.apply(leadId, "COMPLETED");
 			if (result.ok) {
-				await this.nurture.startMonthly(leadId);
-				return { status: "exhausted", leadId, touch, jobId };
+				return { status: "completed", leadId, touch, jobId };
 			}
 		}
 

@@ -7,7 +7,7 @@
 // (`DEFAULT_TEMPLATES` in `@/core/messages`), so a fresh database needs no seed
 // and "reset to default" simply deletes the row.
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 import { db, type Database } from "@/db/client";
 import { messageTemplates } from "@/db/schema";
@@ -15,21 +15,32 @@ import type { TemplateKey } from "@/core/types";
 import type { MessageTemplateRepository } from "@/services/repositories";
 
 /**
- * Concrete {@link MessageTemplateRepository} over Drizzle/PostgreSQL. Stateless
- * beyond the injected database client; safe to construct per request.
+ * Concrete {@link MessageTemplateRepository} over Drizzle/PostgreSQL, bound to
+ * ONE organization at construction. The table's primary key is
+ * `(organization_id, template_key)`, so each tenant customizes its own copy of a
+ * template; before the tenancy retrofit the key was `template_key` alone and
+ * every organization edited the same six rows. A tenant that has customized
+ * nothing simply has no rows and falls back to the built-in defaults, so a new
+ * organization needs no seed. Stateless beyond the injected org + database
+ * client; safe to construct per request.
  */
 export class DrizzleMessageTemplateRepository
 	implements MessageTemplateRepository
 {
+	private readonly organizationId: string;
 	private readonly database: Database;
 
-	constructor(database: Database = db) {
+	constructor(organizationId: string, database: Database = db) {
+		this.organizationId = organizationId;
 		this.database = database;
 	}
 
 	/** @inheritdoc */
 	async getAll(): Promise<Partial<Record<TemplateKey, string>>> {
-		const rows = await this.database.select().from(messageTemplates);
+		const rows = await this.database
+			.select()
+			.from(messageTemplates)
+			.where(eq(messageTemplates.organizationId, this.organizationId));
 		const result: Partial<Record<TemplateKey, string>> = {};
 		for (const row of rows) {
 			result[row.templateKey] = row.body;
@@ -41,9 +52,16 @@ export class DrizzleMessageTemplateRepository
 	async upsert(key: TemplateKey, body: string): Promise<void> {
 		await this.database
 			.insert(messageTemplates)
-			.values({ templateKey: key, body, updatedAt: new Date() })
+			.values({
+				organizationId: this.organizationId,
+				templateKey: key,
+				body,
+				updatedAt: new Date(),
+			})
 			.onConflictDoUpdate({
-				target: messageTemplates.templateKey,
+				// The conflict target is the composite primary key, so one tenant's
+				// edit can never overwrite another's row for the same key.
+				target: [messageTemplates.organizationId, messageTemplates.templateKey],
 				set: { body, updatedAt: new Date() },
 			});
 	}
@@ -52,6 +70,11 @@ export class DrizzleMessageTemplateRepository
 	async reset(key: TemplateKey): Promise<void> {
 		await this.database
 			.delete(messageTemplates)
-			.where(eq(messageTemplates.templateKey, key));
+			.where(
+				and(
+					eq(messageTemplates.organizationId, this.organizationId),
+					eq(messageTemplates.templateKey, key),
+				),
+			);
 	}
 }

@@ -11,6 +11,7 @@ import { use } from "react";
 
 import {
 	LeadHeader,
+	LeadStateActions,
 	MessageHistoryCard,
 	QualificationCard,
 } from "../../_components/lead-detail";
@@ -37,6 +38,7 @@ export default function LeadDetailPage({
 			{lead ? (
 				<div className="mt-4">
 					<LeadHeader lead={lead} />
+					<LeadStateActions lead={lead} />
 					<div className="grid gap-5 lg:grid-cols-2">
 						<QualificationCard qualification={lead.qualification} />
 						<MessageHistoryCard messages={lead.messages} />

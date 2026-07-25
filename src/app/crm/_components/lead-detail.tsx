@@ -1,11 +1,15 @@
 // CRM_UI lead detail panels (task 22.3, Req 20.2, 20.4).
 //
-// Presentational building blocks shared by the lead detail page and the
-// handed-off leads view: the lead identity header, the collected qualification
-// fields, and the conversation history. Presentation only — the data is fetched
-// by the pages and passed in.
+// Building blocks shared by the lead detail page and the handed-off leads view:
+// the lead identity header, the consultant's state controls, the collected
+// qualification fields, and the conversation history. Data is fetched by the
+// pages and passed in; the one exception is {@link LeadStateActions}, which owns
+// its own mutations because it writes rather than displays.
+
+"use client";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
 	Card,
 	CardContent,
@@ -13,6 +17,7 @@ import {
 	CardTitle,
 } from "@/components/ui/card";
 
+import { useReenqueueLead, useSetLeadState } from "../_lib/api";
 import {
 	formatBoolean,
 	formatCurrency,
@@ -25,9 +30,9 @@ import type {
 	MessageView,
 	QualificationView,
 } from "../_lib/types";
-import { LifecycleBadge, ScoreBadge } from "./ui";
+import { LifecycleBadge } from "./ui";
 
-/** Identity + status header for a lead (phone, source, state, score). */
+/** Identity + status header for a lead (phone, source, state). */
 export function LeadHeader({ lead }: { lead: LeadDetailView }) {
 	return (
 		<div className="mb-6 flex flex-wrap items-center gap-3">
@@ -35,7 +40,6 @@ export function LeadHeader({ lead }: { lead: LeadDetailView }) {
 				{lead.phoneE164}
 			</h1>
 			<LifecycleBadge state={lead.lifecycleState} />
-			<ScoreBadge score={lead.score} band={lead.classificationBand} />
 			<span className="text-sm text-muted-foreground">via {lead.source}</span>
 			{lead.optInStatus === "opt_out" ? (
 				<Badge variant="outline" className="text-muted-foreground">
@@ -43,6 +47,87 @@ export function LeadHeader({ lead }: { lead: LeadDetailView }) {
 				</Badge>
 			) : null}
 			{lead.blocked ? <Badge variant="destructive">Bloqueado</Badge> : null}
+		</div>
+	);
+}
+
+/**
+ * The consultant's controls over the lead's state (ADR-003 rules 4–5).
+ *
+ * Deliberately state-dependent rather than a generic dropdown of all seven
+ * states: at any moment there are at most two sensible moves, and showing the
+ * others would invite a `409` from the server for no gain. `OPTED_OUT` never
+ * appears — that is the lead's decision, not the consultant's, and it has to go
+ * through the compliance path.
+ */
+export function LeadStateActions({ lead }: { lead: LeadDetailView }) {
+	const setState = useSetLeadState();
+	const reenqueue = useReenqueueLead();
+	const busy = setState.isPending || reenqueue.isPending;
+
+	const actions: {
+		label: string;
+		hint: string;
+		run: () => void;
+		variant?: React.ComponentProps<typeof Button>["variant"];
+	}[] = [];
+
+	if (lead.lifecycleState === "REPLIED") {
+		actions.push(
+			{
+				label: "Marcar como ganho",
+				hint: "O lead fechou negócio.",
+				run: () =>
+					setState.mutate({ leadId: lead.id, lifecycleState: "WON" }),
+			},
+			{
+				label: "Marcar como perdido",
+				hint: "Não vai fechar.",
+				variant: "outline",
+				run: () =>
+					setState.mutate({ leadId: lead.id, lifecycleState: "LOST" }),
+			},
+		);
+	}
+
+	// Undo a mis-click: both outcomes step back through REPLIED.
+	if (lead.lifecycleState === "WON" || lead.lifecycleState === "LOST") {
+		actions.push({
+			label: "Reabrir atendimento",
+			hint: "Desfaz o desfecho e devolve o lead para “Respondeu”.",
+			variant: "outline",
+			run: () =>
+				setState.mutate({ leadId: lead.id, lifecycleState: "REPLIED" }),
+		});
+	}
+
+	if (lead.lifecycleState === "COMPLETED") {
+		actions.push({
+			label: "Recolocar na cadência",
+			hint: "Agenda os cinco toques novamente, do começo.",
+			variant: "outline",
+			run: () => reenqueue.mutate(lead.id),
+		});
+	}
+
+	if (actions.length === 0) {
+		return null;
+	}
+
+	return (
+		<div className="mb-6 flex flex-wrap items-center gap-2">
+			{actions.map((action) => (
+				<Button
+					key={action.label}
+					size="sm"
+					variant={action.variant}
+					disabled={busy}
+					title={action.hint}
+					onClick={action.run}
+				>
+					{action.label}
+				</Button>
+			))}
 		</div>
 	);
 }

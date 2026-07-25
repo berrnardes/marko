@@ -38,16 +38,13 @@ export function formatText(value: string | null): string {
 	return value && value.trim().length > 0 ? value : "—";
 }
 
-/** Human-readable labels for the lifecycle states (Req 20.1). */
+/** Human-readable labels for the seven lifecycle states (ADR-003). */
 export const LIFECYCLE_LABELS: Record<LifecycleState, string> = {
-	COLD_QUEUED: "Frio (na fila)",
+	QUEUED: "Na fila",
 	IN_CADENCE: "Em cadência",
 	REPLIED: "Respondeu",
-	QUALIFYING: "Qualificando",
-	HOT: "Quente",
-	WARM: "Morno",
-	DISQUALIFIED: "Desqualificado",
-	CADENCE_EXHAUSTED: "Cadência esgotada",
-	MONTHLY_NURTURE: "Nutrição mensal",
+	COMPLETED: "Cadência concluída",
+	WON: "Ganho",
+	LOST: "Perdido",
 	OPTED_OUT: "Optou por sair",
 };

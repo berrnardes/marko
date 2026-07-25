@@ -7,14 +7,13 @@
 // shapes cross the JSON boundary of the internal `/api/crm/*` endpoints.
 
 import type {
-	ClassificationBand,
 	HandoffReason,
 	LifecycleState,
 	Objective,
 	OptInStatus,
 } from "@/core/types";
 
-/** A single row in the lead list — lifecycle state + score (Req 20.1). */
+/** A single row in the lead list — the lead plus its lifecycle state (Req 20.1). */
 export interface LeadSummaryView {
 	id: string;
 	phoneE164: string;
@@ -22,8 +21,6 @@ export interface LeadSummaryView {
 	/** Lead name captured from an import, when one was supplied. */
 	displayName: string | null;
 	lifecycleState: LifecycleState;
-	score: number;
-	classificationBand: ClassificationBand | null;
 	/** ISO-8601 timestamp of the lead's last update. */
 	updatedAt: string;
 	/** ISO-8601 timestamp of the lead's creation. */
@@ -57,8 +54,6 @@ export interface LeadDetailView {
 	displayName: string | null;
 	lifecycleState: LifecycleState;
 	optInStatus: OptInStatus;
-	score: number;
-	classificationBand: ClassificationBand | null;
 	blocked: boolean;
 	qualification: QualificationView;
 	assignedConsultantId: string | null;

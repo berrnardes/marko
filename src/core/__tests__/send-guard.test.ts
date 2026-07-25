@@ -13,10 +13,8 @@ function makeLead(overrides: Partial<LeadSnapshot> = {}): LeadSnapshot {
 		lifecycleState: "IN_CADENCE",
 		optInStatus: "opt_in",
 		optInAt: null,
-		score: 0,
 		blocked: false,
 		unreachableAt: null,
-		classificationBand: null,
 		qualification: {
 			segment: null,
 			creditValue: null,
@@ -47,16 +45,42 @@ describe("evaluateSendGuard", () => {
 		expect(evaluateSendGuard(makeLead({ unreachableAt: null }))).toBe("send");
 	});
 
-	it.each(["blocked", "opt_out", "stop_state"] as const)(
-		'returns "skip_and_cancel" for the existing %s stop condition',
+	it.each(["blocked", "opt_out"] as const)(
+		'returns "skip_and_cancel" for the %s stop condition',
 		(condition) => {
 			const lead =
 				condition === "blocked"
 					? makeLead({ blocked: true })
-					: condition === "opt_out"
-						? makeLead({ optInStatus: "opt_out" })
-						: makeLead({ lifecycleState: "HOT" });
+					: makeLead({ optInStatus: "opt_out" });
 			expect(evaluateSendGuard(lead)).toBe("skip_and_cancel");
 		},
 	);
+
+	// The state-based stop conditions, stated per state so a change to
+	// STOP_STATES has to be made deliberately (ADR-003).
+	it.each(["REPLIED", "WON", "LOST", "OPTED_OUT"] as const)(
+		'returns "skip_and_cancel" when the lead is %s',
+		(lifecycleState) => {
+			expect(evaluateSendGuard(makeLead({ lifecycleState }))).toBe(
+				"skip_and_cancel",
+			);
+		},
+	);
+
+	it.each(["QUEUED", "IN_CADENCE"] as const)(
+		'returns "send" while the lead is %s',
+		(lifecycleState) => {
+			expect(evaluateSendGuard(makeLead({ lifecycleState }))).toBe("send");
+		},
+	);
+
+	it('returns "send" for a COMPLETED lead, so the T5 breakup still goes out', () => {
+		// The cadence worker enqueues the fifth touch and THEN moves the lead to
+		// COMPLETED, so the outbound choke point always drains that job against an
+		// already-COMPLETED lead. Treating COMPLETED as a stop state would silently
+		// drop the breakup message every single time.
+		expect(evaluateSendGuard(makeLead({ lifecycleState: "COMPLETED" }))).toBe(
+			"send",
+		);
+	});
 });

@@ -91,10 +91,17 @@ export interface CadenceScheduler {
 // ---------------------------------------------------------------------------
 
 /**
- * The payload of a single cadence touch job. It carries only what the
- * `Cadence_Worker` (a later task) needs to act: the Lead the touch is for and
- * which touch in the sequence fired. The Worker re-reads fresh Lead state at
- * execution time, so nothing time-sensitive is captured in the payload.
+ * The payload of a single cadence touch job, as the scheduler knows it: the
+ * Lead the touch is for and which touch in the sequence fired. The Worker
+ * re-reads fresh Lead state at execution time, so nothing time-sensitive is
+ * captured in the payload.
+ *
+ * The scheduler is tenant-unaware — it is built over repositories already bound
+ * to one organization — so the owning `organizationId` is NOT here. The queue
+ * adapter stamps it onto the durable payload on the way out, because the worker
+ * that dequeues this job days later runs in another process and must rebuild the
+ * tenant's services before it can act (see `CadenceTouchJobPayload` in
+ * `@/services/runtime`).
  */
 export interface CadenceTouchJob {
 	/** The Lead this touch is scheduled for. */

@@ -33,13 +33,11 @@ function newSnapshot(id: string, input: NewLeadInput): LeadSnapshot {
 		phoneE164: input.phoneE164,
 		source: input.source,
 		displayName: input.displayName ?? null,
-		lifecycleState: "COLD_QUEUED",
+		lifecycleState: "QUEUED",
 		optInStatus: "opt_in",
 		optInAt: null,
-		score: 0,
 		blocked: false,
 		unreachableAt: null,
-		classificationBand: null,
 		qualification: {
 			segment: null,
 			creditValue: null,
@@ -143,7 +141,7 @@ describe("LeadImporter.import", () => {
 		]);
 		// Each created Lead starts COLD_QUEUED.
 		for (const snapshot of leadRepo.byPhone.values()) {
-			expect(snapshot.lifecycleState).toBe("COLD_QUEUED");
+			expect(snapshot.lifecycleState).toBe("QUEUED");
 		}
 		// Every new Lead is enrolled into the cadence (Req 2.3).
 		expect(cadence.enrolled).toEqual(["lead-1", "lead-2"]);

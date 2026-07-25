@@ -7,15 +7,15 @@
 
 import { NextResponse, type NextRequest } from "next/server";
 
-import { requireMemberSession } from "@/app/api/crm/settings/_lib/session";
+import { requireOrgSession } from "@/app/api/crm/_lib/guard";
 import { settingsWiring } from "@/app/api/crm/settings/_lib/wiring";
 
 export async function GET(): Promise<NextResponse> {
-	const auth = await requireMemberSession();
+	const auth = await requireOrgSession();
 	if ("denied" in auth) return auth.denied;
-	const { userId, organizationId } = auth.member;
+	const { userId, organizationId } = auth.org;
 
-	const { consultants, verifications } = settingsWiring();
+	const { consultants, verifications } = settingsWiring(auth.org.organizationId);
 	const settings = await consultants.getNotificationSettings(
 		userId,
 		organizationId,
@@ -41,9 +41,9 @@ export async function GET(): Promise<NextResponse> {
 }
 
 export async function PATCH(request: NextRequest): Promise<NextResponse> {
-	const auth = await requireMemberSession();
+	const auth = await requireOrgSession();
 	if ("denied" in auth) return auth.denied;
-	const { userId, organizationId } = auth.member;
+	const { userId, organizationId } = auth.org;
 
 	const body = (await request.json()) as { receivesHandoffAlerts?: boolean };
 	if (typeof body.receivesHandoffAlerts !== "boolean") {
@@ -53,7 +53,7 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
 		);
 	}
 
-	const { consultants } = settingsWiring();
+	const { consultants } = settingsWiring(auth.org.organizationId);
 	await consultants.setAlertOptIn(
 		userId,
 		organizationId,

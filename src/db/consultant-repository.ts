@@ -9,12 +9,16 @@
 // sessions, memberships themselves) stays written by Better Auth alone (see
 // `@/db/auth-schema`).
 //
-// A handoff-alert recipient must satisfy all three gates: the membership has
-// `receives_handoff_alerts` on, and the user has a phone that is VERIFIED
-// (`phone_verified_at` stamped server-side after the WhatsApp confirmation
-// loop). Until `tenant_id` lands on the domain tables the recipient query is
-// org-agnostic; it then gains an organization filter so each lead alerts only
-// its own org's consultants.
+// A handoff-alert recipient must satisfy all four gates: the membership belongs
+// to the lead's organization, it has `receives_handoff_alerts` on, and the user
+// has a phone that is VERIFIED (`phone_verified_at` stamped server-side after
+// the WhatsApp confirmation loop).
+//
+// Unlike the domain repositories, this class is NOT bound to an organization at
+// construction: `member` is Better Auth's own table and is keyed by
+// `(user_id, organization_id)`, so its org-aware methods take the organization
+// explicitly. The user-keyed writes (`setPhone`, `stampPhoneVerified`) touch
+// identity rather than tenant data and are scoped by `user_id` alone.
 
 import { and, eq, isNotNull } from "drizzle-orm";
 
@@ -34,13 +38,14 @@ export class DrizzleConsultantRepository implements ConsultantRepository {
 	}
 
 	/** @inheritdoc */
-	async listHandoffAlertRecipients(): Promise<string[]> {
+	async listHandoffAlertRecipients(organizationId: string): Promise<string[]> {
 		const rows = await this.database
 			.selectDistinct({ phoneE164: user.phoneE164 })
 			.from(member)
 			.innerJoin(user, eq(member.userId, user.id))
 			.where(
 				and(
+					eq(member.organizationId, organizationId),
 					eq(member.receivesHandoffAlerts, true),
 					isNotNull(user.phoneE164),
 					isNotNull(user.phoneVerifiedAt),

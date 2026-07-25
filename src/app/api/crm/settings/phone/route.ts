@@ -7,11 +7,11 @@
 
 import { NextResponse, type NextRequest } from "next/server";
 
-import { requireMemberSession } from "@/app/api/crm/settings/_lib/session";
+import { requireOrgSession } from "@/app/api/crm/_lib/guard";
 import { settingsWiring } from "@/app/api/crm/settings/_lib/wiring";
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
-	const auth = await requireMemberSession();
+	const auth = await requireOrgSession();
 	if ("denied" in auth) return auth.denied;
 
 	const body = (await request.json()) as { phone?: string };
@@ -22,8 +22,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 		);
 	}
 
-	const { verification } = settingsWiring();
-	const result = await verification.start(auth.member.userId, body.phone);
+	const { verification } = settingsWiring(auth.org.organizationId);
+	const result = await verification.start(auth.org.userId, body.phone);
 	if (!result.ok) {
 		switch (result.reason) {
 			case "invalid_phone":

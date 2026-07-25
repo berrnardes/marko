@@ -17,12 +17,16 @@
 // (task 21.5) override the provider with in-memory fakes via
 // {@link setWebhookDepsProvider}.
 
+import { findNumberBySessionName } from "@/db/number-repository";
+import { withOrg } from "@/db/with-org";
 import {
 	processWahaWebhook,
 	WAHA_HMAC_HEADER,
+	type LidResolver,
 	type WahaWebhookDeps,
 } from "@/services";
-import { getRuntime, resolveNumberIdForSession } from "@/services/runtime";
+import { getRuntime } from "@/services/runtime";
+import { createWahaClient } from "@/services/waha-client";
 
 /**
  * Force the Node.js runtime: signature verification uses `node:crypto`
@@ -62,6 +66,35 @@ export function setWebhookDepsProvider(
 	};
 }
 
+/** Process-wide client used only to resolve `@lid` senders. */
+let lidResolverClient: LidResolver | undefined;
+
+/**
+ * A WAHA client for the single purpose of resolving a hidden Linked ID to a
+ * phone-number chat id.
+ *
+ * It is deliberately NOT tenant-bound, and safe not to be: `resolveLidToPhone`
+ * addresses WAHA by session name, which the delivery already carries, and never
+ * touches the database. Its `resolveNumber` seam — the only tenant-sensitive
+ * part of the client — maps a domain `numberId` to a session and is unreachable
+ * on this path, so it is wired to throw rather than to a repository. Every other
+ * WAHA call the system makes goes through an organization-scoped client built by
+ * `getOrgServices`.
+ */
+function lidResolver(): LidResolver {
+	lidResolverClient ??= createWahaClient({
+		baseUrl: process.env.WAHA_BASE_URL ?? "http://localhost:3000",
+		apiKey: process.env.WAHA_API_KEY,
+		resolveNumber: () => {
+			throw new Error(
+				"the webhook's lid resolver has no tenant context; resolve the " +
+					"organization first and use its client from getOrgServices",
+			);
+		},
+	});
+	return lidResolverClient;
+}
+
 /**
  * Read the configured shared HMAC secret from the environment (Req 7.1). Throws
  * when unset so a misconfigured deployment fails loudly rather than silently
@@ -78,28 +111,42 @@ export function requireWebhookSecret(): string {
 }
 
 /**
- * Default production dependency provider (task 23.1). Resolves the shared
- * runtime (`@/services/runtime`) for the Drizzle-backed
- * `LeadRepository`/`MessageRepository` and the pg-boss-backed
- * {@link import("@/services").InboundProcessingQueue}, and reads the HMAC secret
- * from the environment. The webhook therefore verifies, persists, and enqueues
- * inbound deliveries durably; the heavy Inbound_Handler pipeline runs off the
- * inbound queue.
+ * Default production dependency provider. Supplies the HMAC secret from the
+ * environment and the session→tenant resolver the webhook scopes itself with.
+ *
+ * The resolver is where inbound multi-tenancy is decided: a delivery names only
+ * a WAHA `session`, so it is looked up in `whatsapp_numbers` (whose
+ * `session_name` is globally unique) to find the organization that registered
+ * it, and the tenant's own repositories, queue, and WAHA client are handed back.
+ * A session no number claims resolves to `null` and the delivery is dropped with
+ * a `200`.
  */
 async function defaultWebhookDepsProvider(): Promise<WahaWebhookDeps> {
 	const secret = requireWebhookSecret();
 	const runtime = await getRuntime();
 	return {
 		secret,
-		leads: runtime.leads,
-		messages: runtime.messages,
-		queue: runtime.inboundQueue,
-		lids: runtime.waha,
-		// Outbound-echo ingestion: count a consultant's WhatsApp Web reply against
-		// the sending number's anti-ban cap (its history row is written by the
-		// service).
-		antiBan: runtime.antiBan,
-		resolveNumberId: (session) => resolveNumberIdForSession(runtime, session),
+		// Runs before any tenant context exists, so under RLS it goes through the
+		// `SECURITY DEFINER` resolver rather than reading `whatsapp_numbers`
+		// directly (ADR-004).
+		resolveSession: (session) => findNumberBySessionName(session),
+		// The persistence unit of work. This route runs in the web process, whose
+		// pool connects as the RLS-enforced role, so the repositories must issue
+		// their statements inside a transaction carrying the tenant context.
+		withScope: (owner, fn) =>
+			withOrg(owner.organizationId, (tx) => {
+				const org = runtime.forOrg(owner.organizationId, tx);
+				return fn({
+					leads: org.leads,
+					messages: org.messages,
+					// Outbound-echo ingestion: count a consultant's WhatsApp Web reply
+					// against the sending number's anti-ban cap (its history row is
+					// written by the service).
+					antiBan: org.antiBan,
+				});
+			}),
+		queue: (organizationId) => runtime.inboundQueue(organizationId),
+		lids: lidResolver(),
 	};
 }
 

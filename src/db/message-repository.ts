@@ -8,7 +8,7 @@
 // inbound handler (append), and the outbound choke point's confirmed-send
 // commit (append the outbound record).
 
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq, type SQL } from "drizzle-orm";
 
 import { db, type Database } from "@/db/client";
 import { messages } from "@/db/schema";
@@ -34,14 +34,27 @@ function toRecord(row: MessageRow): MessageRecord {
 }
 
 /**
- * Concrete {@link MessageRepository} over Drizzle/PostgreSQL. Stateless beyond
- * the injected database client; safe to construct per request.
+ * Concrete {@link MessageRepository} over Drizzle/PostgreSQL, bound to ONE
+ * organization at construction. `organization_id` is denormalized onto every
+ * message rather than joined from the lead, so both the tenant filter here and
+ * PR3's row-level policies read it directly off the row. Stateless beyond the
+ * injected org + database client; safe to construct per request.
  */
 export class DrizzleMessageRepository implements MessageRepository {
+	private readonly organizationId: string;
 	private readonly database: Database;
 
-	constructor(database: Database = db) {
+	constructor(organizationId: string, database: Database = db) {
+		this.organizationId = organizationId;
 		this.database = database;
+	}
+
+	/** Narrow `condition` to this repository's organization. */
+	private scoped(condition: SQL): SQL {
+		return and(
+			eq(messages.organizationId, this.organizationId),
+			condition,
+		) as SQL;
 	}
 
 	/** @inheritdoc */
@@ -49,6 +62,7 @@ export class DrizzleMessageRepository implements MessageRepository {
 		const [row] = await this.database
 			.insert(messages)
 			.values({
+				organizationId: this.organizationId,
 				leadId: input.leadId,
 				direction: input.direction,
 				content: input.content,
@@ -65,7 +79,7 @@ export class DrizzleMessageRepository implements MessageRepository {
 		const rows = await this.database
 			.select()
 			.from(messages)
-			.where(eq(messages.leadId, leadId))
+			.where(this.scoped(eq(messages.leadId, leadId)))
 			.orderBy(asc(messages.createdAt));
 		return rows.map(toRecord);
 	}
@@ -75,7 +89,7 @@ export class DrizzleMessageRepository implements MessageRepository {
 		const [row] = await this.database
 			.select()
 			.from(messages)
-			.where(eq(messages.waMessageId, waMessageId))
+			.where(this.scoped(eq(messages.waMessageId, waMessageId)))
 			.limit(1);
 		return row ? toRecord(row) : null;
 	}

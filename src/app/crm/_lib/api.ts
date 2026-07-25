@@ -17,6 +17,8 @@ import {
 } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+import type { LifecycleState } from "@/core/types";
+
 import type {
 	HandoffLeadView,
 	ImportReportView,
@@ -100,6 +102,60 @@ export function useLead(leadId: string): UseQueryResult<LeadDetailView> {
 }
 
 /** Fetch the handed-off leads with collected data + history (Req 13.3, 20.4). */
+/**
+ * Record a lead's outcome, or correct one (ADR-003 rules 4–5): the consultant's
+ * hand on the state machine. The server validates the move, so an out-of-date
+ * screen gets a `409` rather than a silent overwrite; both the detail and the
+ * list are invalidated so the badge and the filter counts follow.
+ */
+export function useSetLeadState(): UseMutationResult<
+	{ lifecycleState: LifecycleState },
+	Error,
+	{ leadId: string; lifecycleState: LifecycleState }
+> {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: async ({ leadId, lifecycleState }) =>
+			sendJson<{ lifecycleState: LifecycleState }>(
+				`/api/crm/leads/${encodeURIComponent(leadId)}`,
+				"PATCH",
+				{ lifecycleState },
+			),
+		onSuccess: (_data, { leadId }) => {
+			void queryClient.invalidateQueries({ queryKey: crmKeys.lead(leadId) });
+			void queryClient.invalidateQueries({ queryKey: crmKeys.leads });
+			toast.success("Estado do lead atualizado");
+		},
+		onError: (error) => toast.error(error.message),
+	});
+}
+
+/**
+ * Put a completed lead back into the cadence, scheduling five fresh touches
+ * (ADR-003 rule 5). Separate from {@link useSetLeadState} because it schedules
+ * work rather than only changing a state.
+ */
+export function useReenqueueLead(): UseMutationResult<
+	{ lifecycleState: LifecycleState; touches: number },
+	Error,
+	string
+> {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: async (leadId: string) =>
+			sendJson<{ lifecycleState: LifecycleState; touches: number }>(
+				`/api/crm/leads/${encodeURIComponent(leadId)}/reenqueue`,
+				"POST",
+			),
+		onSuccess: (data, leadId) => {
+			void queryClient.invalidateQueries({ queryKey: crmKeys.lead(leadId) });
+			void queryClient.invalidateQueries({ queryKey: crmKeys.leads });
+			toast.success(`Lead recolocado na cadência (${data.touches} toques)`);
+		},
+		onError: (error) => toast.error(error.message),
+	});
+}
+
 export function useHandoffs(): UseQueryResult<HandoffLeadView[]> {
 	return useQuery({
 		queryKey: crmKeys.handoffs,

@@ -7,7 +7,7 @@
 // the CRM_UI handoff view alongside the Lead's qualification data and message
 // history (Req 13.3). This repository only ever appends and reads.
 
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 
 import type { HandoffReason } from "@/core/types";
 import { db, type Database } from "@/db/client";
@@ -27,13 +27,16 @@ function toRecord(row: HandoffRow): HandoffRecord {
 }
 
 /**
- * Concrete {@link HandoffRepository} over Drizzle/PostgreSQL. Stateless beyond
- * the injected database client; safe to construct per request.
+ * Concrete {@link HandoffRepository} over Drizzle/PostgreSQL, bound to ONE
+ * organization at construction. Stateless beyond the injected org + database
+ * client; safe to construct per request.
  */
 export class DrizzleHandoffRepository implements HandoffRepository {
+	private readonly organizationId: string;
 	private readonly database: Database;
 
-	constructor(database: Database = db) {
+	constructor(organizationId: string, database: Database = db) {
+		this.organizationId = organizationId;
 		this.database = database;
 	}
 
@@ -45,7 +48,12 @@ export class DrizzleHandoffRepository implements HandoffRepository {
 	): Promise<HandoffRecord> {
 		const [row] = await this.database
 			.insert(handoffEvents)
-			.values({ leadId, reason, createdAt: at })
+			.values({
+				organizationId: this.organizationId,
+				leadId,
+				reason,
+				createdAt: at,
+			})
 			.returning();
 		return toRecord(row);
 	}
@@ -55,7 +63,12 @@ export class DrizzleHandoffRepository implements HandoffRepository {
 		const rows = await this.database
 			.select()
 			.from(handoffEvents)
-			.where(eq(handoffEvents.leadId, leadId))
+			.where(
+				and(
+					eq(handoffEvents.organizationId, this.organizationId),
+					eq(handoffEvents.leadId, leadId),
+				),
+			)
 			.orderBy(asc(handoffEvents.createdAt));
 		return rows.map(toRecord);
 	}

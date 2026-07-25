@@ -6,7 +6,7 @@
 
 import { NextResponse } from "next/server";
 
-import { denyIfUnauthenticated } from "@/app/api/crm/_lib/guard";
+import { requireOrgSession } from "@/app/api/crm/_lib/guard";
 import type { SessionStatusView } from "@/app/crm/_lib/types";
 import { msisdnFromMe, wahaAdmin } from "@/services/waha-admin-client";
 
@@ -16,8 +16,8 @@ export async function GET(
 	_request: Request,
 	{ params }: Params,
 ): Promise<NextResponse> {
-	const denied = await denyIfUnauthenticated();
-	if (denied) return denied;
+	const auth = await requireOrgSession();
+	if ("denied" in auth) return auth.denied;
 
 	const { sessionName } = await params;
 	try {
@@ -54,8 +54,8 @@ export async function DELETE(
 	_request: Request,
 	{ params }: Params,
 ): Promise<NextResponse> {
-	const denied = await denyIfUnauthenticated();
-	if (denied) return denied;
+	const auth = await requireOrgSession();
+	if ("denied" in auth) return auth.denied;
 
 	const { sessionName } = await params;
 	await wahaAdmin.logoutAndDelete(sessionName);

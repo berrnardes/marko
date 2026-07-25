@@ -1,11 +1,15 @@
-// Runtime composition root (entry-point wiring — task 23.1).
+// Runtime composition root (entry-point wiring — process-wide half).
 //
-// Side-effect boundary: this is the shared composition root that wires the
-// pure core + domain services to their concrete data layer (Drizzle
-// repositories) and the durable job queue (pg-boss). Like `@/services/auth` and
-// `@/services/crm-importer`, it legitimately depends on concrete modules
-// (`@/db/*` and `pg-boss`) rather than only on interfaces — it is where the
-// interface-typed services are finally given their real implementations.
+// Side-effect boundary: this module owns what is genuinely process-wide — the
+// pg-boss connection, the anti-ban configuration read from the environment, and
+// the clock. The per-tenant half (the Drizzle repositories bound to one
+// organization and the domain services over them) lives in
+// `@/services/org-runtime` and is reached through {@link Runtime.forOrg}.
+//
+// That split is the tenancy boundary. `getRuntime()` is a process-wide
+// singleton, so nothing it holds may be tenant-specific; conversely nothing
+// outside `forOrg` can obtain a repository at all, so a query cannot accidentally
+// run unscoped.
 //
 // Both processes call into this module and share the SAME domain modules; only
 // the entry point differs (design "Architecture"):
@@ -13,7 +17,7 @@
 //     through the real `Cadence_Scheduler` (Req 2.3, 3.1) and to enqueue inbound
 //     webhook processing onto pg-boss;
 //   - the long-running worker calls {@link getRuntime} then
-//     {@link registerWorkers} to register the cadence, nurture, and outbound
+//     {@link registerWorkers} to register the cadence, outbound, and inbound
 //     pg-boss handlers (design "Entry points").
 //
 // It is intentionally NOT re-exported from the `@/services` barrel: importing it
@@ -24,87 +28,28 @@
 import { PgBoss } from "pg-boss";
 
 import { CADENCE_TEST_MODE, CADENCE_TOUCHES_COUNT } from "@/core/cadence";
-import { createRefreshableMessageGenerator } from "@/core/messages";
-import type { AntiBanConfig, Clock, TemplateKey } from "@/core/types";
-import { DrizzleComplianceRepository } from "@/db/compliance-repository";
-import { DrizzleConsultantRepository } from "@/db/consultant-repository";
-import { DrizzleHandoffRepository } from "@/db/handoff-repository";
-import { DrizzleLeadRepository } from "@/db/lead-repository";
-import { DrizzleMessageRepository } from "@/db/message-repository";
-import { DrizzleMessageTemplateRepository } from "@/db/message-template-repository";
-import { DrizzleNumberRepository } from "@/db/number-repository";
-import { DrizzleScheduledJobRepository } from "@/db/scheduled-job-repository";
+import type { AntiBanConfig, Clock } from "@/core/types";
+import type { Database } from "@/db/client";
+import { resolveOrganizationIdForLead } from "@/db/lead-repository";
 import { childLogger, logger } from "@/logger";
-import {
-	createAntiBanController,
-	type AntiBanController,
-} from "@/services/anti-ban-controller";
-import {
-	createCadenceScheduler,
-	type CadenceJobQueue,
-	type CadenceScheduler,
-	type CadenceTouchJob,
+import type {
+	CadenceJobQueue,
+	CadenceTouchJob,
 } from "@/services/cadence-scheduler";
-import {
-	createCadenceWorker,
-	type CadenceWorker,
-} from "@/services/cadence-worker";
-import {
-	createComplianceManager,
-	type ComplianceManager,
-} from "@/services/compliance-manager";
-import {
-	createHandoffManager,
-	type HandoffManager,
-} from "@/services/handoff-manager";
-import { createHandoffNotifier } from "@/services/handoff-notifier";
-import {
-	createInboundHandler,
-	type InboundHandler,
-	type InboundMessage,
-} from "@/services/inbound-handler";
+import type { InboundMessage } from "@/services/inbound-handler";
 import {
 	type InboundProcessingJob,
 	type InboundProcessingQueue,
 } from "@/services/inbound-webhook";
 import {
-	createLeadImporter,
-	type LeadImporter,
-} from "@/services/lead-importer";
-import {
-	createLifecycleManager,
-	type LifecycleManager,
-} from "@/services/lifecycle-manager";
-import {
-	createNurtureScheduler,
-	type NurtureJob,
-	type NurtureJobQueue,
-	type NurtureScheduler,
-} from "@/services/nurture-scheduler";
-import {
-	createNurtureWorker,
-	type NurtureWorker,
-} from "@/services/nurture-worker";
-import {
-	createOutboundWorker,
-	createSequentialOutboundSendCommitter,
-	type OutboundSendQueue,
-	type OutboundSendRequest,
-	type OutboundWorker,
-} from "@/services/outbound-worker";
+	getOrgServices,
+	type OrgServices,
+	type OrgServicesContext,
+} from "@/services/org-runtime";
 import type {
-	ConsultantRepository,
-	MessageRepository,
-} from "@/services/repositories";
-import {
-	createScoringEngine,
-	type ScoringEngine,
-} from "@/services/scoring-engine";
-import {
-	createWahaClient,
-	numberSessionResolverFromRepository,
-	type WahaClient,
-} from "@/services/waha-client";
+	OutboundSendQueue,
+	OutboundSendRequest,
+} from "@/services/outbound-worker";
 
 // ---------------------------------------------------------------------------
 // Queue names (the durable pg-boss queues backing the schedulers/workers)
@@ -114,8 +59,9 @@ import {
 export const QUEUE_NAMES = {
 	/** Delayed cadence touch jobs T1–T5 (Req 3.2, 3.4). */
 	cadence: "cadence-touch",
-	/** Self-perpetuating monthly nurture jobs (Req 6.3). */
-	nurture: "monthly-nurture",
+	// The `monthly-nurture` queue was removed with the beta scope cuts
+	// (ADR-002). Nothing enqueues or consumes it any more; jobs left in the
+	// pg-boss backlog simply age out under its retention policy.
 	/** The single outbound send choke point (Req 16, 17, 18). */
 	outbound: "outbound-send",
 	/** Inbound WAHA message processing handed off from the webhook (Req 7.1). */
@@ -135,10 +81,12 @@ function connectionString(): string {
  * Parse the comma-separated consultant alert numbers from
  * `CONSULTANT_NOTIFY_NUMBERS` into a trimmed, non-empty E.164 list.
  *
- * DEPRECATED: recipients now come from org membership (members with a verified
- * phone and alerts on, see {@link consultantRecipientResolver}); this env list
- * is only the migration fallback when no member qualifies yet. Delete it — and
- * the env vars — once every org manages its consultants in the CRM.
+ * DEPRECATED: recipients now come from the lead's own organization membership
+ * (members with a verified phone and alerts on, resolved in
+ * `@/services/org-runtime`); this env list is only the migration fallback when
+ * no member of that organization qualifies yet. Note it is a SINGLE global list
+ * shared by every tenant — which is precisely why it must go: delete it, and the
+ * env vars, once every org manages its consultants in the CRM.
  */
 function parseConsultantNumbers(raw: string | undefined): string[] {
 	if (!raw) {
@@ -148,61 +96,6 @@ function parseConsultantNumbers(raw: string | undefined): string[] {
 		.split(",")
 		.map((entry) => entry.trim())
 		.filter((entry) => entry.length > 0);
-}
-
-/**
- * Build the handoff-alert recipient resolver: members with a verified phone
- * and alerts on win; while none qualify, the deprecated
- * `CONSULTANT_NOTIFY_NUMBERS` env list is used instead, with a
- * `handoff.env_fallback` warning each time so the migration gap stays visible
- * in the logs until the org configures a consultant in the CRM.
- */
-function consultantRecipientResolver(
-	consultants: ConsultantRepository,
-	envNumbers: readonly string[],
-): (leadId: string) => Promise<readonly string[]> {
-	return async (leadId: string) => {
-		const recipients = await consultants.listHandoffAlertRecipients();
-		if (recipients.length > 0) {
-			return recipients;
-		}
-		if (envNumbers.length > 0) {
-			logger.warn(
-				{ event: "handoff.env_fallback", leadId },
-				"no member with a verified phone and alerts on; falling back to " +
-					"deprecated CONSULTANT_NOTIFY_NUMBERS",
-			);
-		}
-		return envNumbers;
-	};
-}
-
-/**
- * Resolve the domain `numberId` the consultant alert is sent *from*. When
- * `CONSULTANT_NOTIFY_FROM_NUMBER` is set it matches a registered number by
- * session name or msisdn; otherwise (or on no match) it falls back to the first
- * available number, then any registered number. Returns `undefined` when no
- * number is registered, in which case the alert is skipped.
- */
-async function resolveNotifyFromNumberId(
-	numbers: DrizzleNumberRepository,
-	configured: string | undefined,
-): Promise<string | undefined> {
-	if (configured) {
-		const all = await numbers.listAll();
-		const match = all.find(
-			(n) => n.sessionName === configured || n.msisdn === configured,
-		);
-		if (match) {
-			return match.id;
-		}
-	}
-	const available = await numbers.listAvailable();
-	if (available.length > 0) {
-		return available[0].id;
-	}
-	const all = await numbers.listAll();
-	return all[0]?.id;
 }
 
 /** Read a positive integer env var, falling back to `fallback` when unset/invalid. */
@@ -287,11 +180,34 @@ function requireJobId(jobId: string | null, queue: string): string {
 	return jobId;
 }
 
-/** Adapt the cadence pg-boss queue to the scheduler's {@link CadenceJobQueue}. */
-function cadenceJobQueue(boss: PgBoss): CadenceJobQueue {
+/**
+ * A durable job payload as it is stored in pg-boss: whatever the domain service
+ * produced, plus the organization that owns it. The domain services are built
+ * over repositories already bound to one tenant and so never name it; the queue
+ * adapters below stamp it on enqueue, and the consumers read it back to rebuild
+ * that tenant's services (`getOrgServices`) before acting.
+ */
+export type Tenanted<T> = T & { organizationId: string };
+
+/** The durable cadence touch payload: `{ leadId, touch }` + its organization. */
+export type CadenceTouchJobPayload = Tenanted<CadenceTouchJob>;
+/** The durable outbound send payload + its organization. */
+export type OutboundSendPayload = Tenanted<OutboundSendRequest>;
+/** The durable inbound processing payload + its organization. */
+export type InboundProcessingPayload = Tenanted<InboundProcessingJob>;
+
+/**
+ * Adapt the cadence pg-boss queue to the scheduler's {@link CadenceJobQueue} for
+ * one organization, stamping `organizationId` onto every enqueued touch.
+ */
+function cadenceJobQueue(
+	boss: PgBoss,
+	organizationId: string,
+): CadenceJobQueue {
 	return {
 		async enqueueTouch(job: CadenceTouchJob, fireAt: Date): Promise<string> {
-			const jobId = await boss.send(QUEUE_NAMES.cadence, job, {
+			const payload: CadenceTouchJobPayload = { ...job, organizationId };
+			const jobId = await boss.send(QUEUE_NAMES.cadence, payload, {
 				startAfter: fireAt,
 			});
 			return requireJobId(jobId, QUEUE_NAMES.cadence);
@@ -302,39 +218,35 @@ function cadenceJobQueue(boss: PgBoss): CadenceJobQueue {
 	};
 }
 
-/** Adapt the nurture pg-boss queue to the scheduler's {@link NurtureJobQueue}. */
-function nurtureJobQueue(boss: PgBoss): NurtureJobQueue {
-	return {
-		async enqueueNurture(job: NurtureJob, fireAt: Date): Promise<string> {
-			const jobId = await boss.send(QUEUE_NAMES.nurture, job, {
-				startAfter: fireAt,
-			});
-			return requireJobId(jobId, QUEUE_NAMES.nurture);
-		},
-		async cancel(jobId: string): Promise<void> {
-			await boss.cancel(QUEUE_NAMES.nurture, jobId);
-		},
-	};
-}
-
-/** Adapt the outbound pg-boss queue to the features' {@link OutboundSendQueue}. */
-function outboundSendQueue(boss: PgBoss): OutboundSendQueue {
+/**
+ * Adapt the outbound pg-boss queue to the features' {@link OutboundSendQueue}
+ * for one organization, stamping `organizationId` onto every enqueued send.
+ */
+function outboundSendQueue(
+	boss: PgBoss,
+	organizationId: string,
+): OutboundSendQueue {
 	return {
 		async enqueueSend(request: OutboundSendRequest): Promise<string> {
-			// Features (cadence/nurture/qualification) enqueue only the request; the
-			// physical sending number is assigned when the job is dequeued by the
-			// outbound handler (design "Enqueue outbound send job").
-			const jobId = await boss.send(QUEUE_NAMES.outbound, request);
+			// The cadence enqueues only the request; the physical sending number is
+			// assigned when the job is dequeued by the outbound handler (design
+			// "Enqueue outbound send job") — from the same organization's numbers.
+			const payload: OutboundSendPayload = { ...request, organizationId };
+			const jobId = await boss.send(QUEUE_NAMES.outbound, payload);
 			return requireJobId(jobId, QUEUE_NAMES.outbound);
 		},
 	};
 }
 
 /** Adapt the inbound pg-boss queue to the webhook's {@link InboundProcessingQueue}. */
-function inboundProcessingQueue(boss: PgBoss): InboundProcessingQueue {
+function inboundProcessingQueue(
+	boss: PgBoss,
+	organizationId: string,
+): InboundProcessingQueue {
 	return {
 		async enqueueInbound(job: InboundProcessingJob): Promise<string> {
-			const jobId = await boss.send(QUEUE_NAMES.inbound, job);
+			const payload: InboundProcessingPayload = { ...job, organizationId };
+			const jobId = await boss.send(QUEUE_NAMES.inbound, payload);
 			return requireJobId(jobId, QUEUE_NAMES.inbound);
 		},
 	};
@@ -345,41 +257,36 @@ function inboundProcessingQueue(boss: PgBoss): InboundProcessingQueue {
 // ---------------------------------------------------------------------------
 
 /**
- * The fully-wired runtime: the started pg-boss instance, the concrete
- * repositories, the domain services, and the durable queues. Built once per
- * process by {@link getRuntime} and shared by the web and worker entry points.
+ * The process-wide runtime: the started pg-boss instance, the configuration and
+ * clock shared by every tenant, and the factory that builds a tenant's domain
+ * layer.
+ *
+ * It deliberately exposes NO repositories or domain services of its own. Those
+ * are per-organization and are reached through {@link Runtime.forOrg}, which
+ * binds them to one `organizationId`; there is no unscoped `leads` or
+ * `messages` here that a caller could reach for by accident.
  */
 export interface Runtime {
 	boss: PgBoss;
 	antiBanConfig: AntiBanConfig;
 	clock: Clock;
-	leads: DrizzleLeadRepository;
-	messages: DrizzleMessageRepository;
-	numbers: DrizzleNumberRepository;
-	scheduledJobs: DrizzleScheduledJobRepository;
-	templates: DrizzleMessageTemplateRepository;
 	/**
-	 * Refresh the cadence/nurture message templates used by the workers. Called
-	 * at the start of each cadence/nurture job batch with the latest stored
-	 * templates so operator edits apply without restarting the worker.
+	 * Build the domain layer (repositories + services) for one organization.
+	 * Cheap — everything it constructs is stateless — so callers build it per
+	 * request or per job rather than caching it.
+	 *
+	 * Pass the `database` when running under RLS: web routes hand in the
+	 * transaction opened by `withOrg`, so the repositories issue their statements
+	 * inside the tenant context the policies read (ADR-004). Omitting it uses the
+	 * shared pool, which is what the worker does — it connects as the
+	 * `BYPASSRLS` role and cannot hold a transaction across its pacing sleeps.
 	 */
-	setMessageTemplates: (
-		templates: Partial<Record<TemplateKey, string>>,
-	) => void;
-	waha: WahaClient;
-	antiBan: AntiBanController;
-	lifecycle: LifecycleManager;
-	compliance: ComplianceManager;
-	handoff: HandoffManager;
-	scoring: ScoringEngine;
-	cadenceScheduler: CadenceScheduler;
-	nurtureScheduler: NurtureScheduler;
-	cadenceWorker: CadenceWorker;
-	nurtureWorker: NurtureWorker;
-	outboundWorker: OutboundWorker;
-	outboundQueue: OutboundSendQueue;
-	inboundQueue: InboundProcessingQueue;
-	importer: LeadImporter;
+	forOrg: (organizationId: string, database?: Database) => OrgServices;
+	/**
+	 * The durable inbound queue for one organization, used by the WAHA webhook
+	 * once it has resolved which tenant the delivering session belongs to.
+	 */
+	inboundQueue: (organizationId: string) => InboundProcessingQueue;
 }
 
 const globalForRuntime = globalThis as unknown as {
@@ -389,9 +296,9 @@ const globalForRuntime = globalThis as unknown as {
 /**
  * Build (once) the shared runtime over a started pg-boss instance and the live
  * Drizzle data layer. Wires the enrollment path (`Lead_Importer` →
- * `Cadence_Scheduler`, Req 2.3, 3.1), the cadence/nurture/outbound workers'
- * domain logic, and the outbound choke point (Req 16, 17, 18) so the web app
- * and the worker share exactly the same domain wiring.
+ * `Cadence_Scheduler`, Req 2.3, 3.1), the cadence/outbound workers' domain
+ * logic, and the outbound choke point (Req 16, 17, 18) so the web app and the
+ * worker share exactly the same domain wiring.
  */
 export function getRuntime(): Promise<Runtime> {
 	if (!globalForRuntime.__markoRuntime) {
@@ -410,148 +317,31 @@ export function getRuntime(): Promise<Runtime> {
 			const antiBanConfig = defaultAntiBanConfig();
 			const clock: Clock = { now: () => new Date() };
 
-			// Concrete repositories (data layer).
-			const leads = new DrizzleLeadRepository();
-			const messages = new DrizzleMessageRepository();
-			const numbers = new DrizzleNumberRepository();
-			const scheduledJobs = new DrizzleScheduledJobRepository();
-			const templates = new DrizzleMessageTemplateRepository();
-
-			// Operator-editable cadence/nurture message templates. The generator is
-			// injected into the cadence/nurture workers once; `setMessageTemplates`
-			// refreshes the bodies at the start of each job batch so edits take
-			// effect on the next job without rebuilding the workers.
-			const { generator: messageGenerator, setTemplates: setMessageTemplates } =
-				createRefreshableMessageGenerator();
-
-			// Pure-core-backed managers and controllers.
-			const lifecycle = createLifecycleManager({ leads });
-			const complianceRepo = new DrizzleComplianceRepository();
-			const handoffRepo = new DrizzleHandoffRepository();
-			const compliance = createComplianceManager({
-				leads,
-				compliance: complianceRepo,
-				scheduledJobs,
-				lifecycle,
-			});
-			const waha = createWahaClient({
-				baseUrl: process.env.WAHA_BASE_URL ?? "http://localhost:3000",
-				apiKey: process.env.WAHA_API_KEY,
-				resolveNumber: numberSessionResolverFromRepository(numbers),
-			});
-			// Best-effort consultant alert on handoff. Recipients are resolved at
-			// notify time from org membership (verified phone + alerts on), with the
-			// deprecated env list as migration fallback, so the notifier is always
-			// constructed — the no-recipient case no-ops (with a warning) per notify.
-			const consultants = new DrizzleConsultantRepository();
-			const handoffNotifier = createHandoffNotifier({
-				waha,
-				leads,
-				resolveRecipients: consultantRecipientResolver(
-					consultants,
-					parseConsultantNumbers(process.env.CONSULTANT_NOTIFY_NUMBERS),
+			// The process-wide context every tenant's domain layer is built over:
+			// shared configuration, the shared clock, and the pg-boss queue adapters
+			// (as per-organization factories, so each enqueued job carries its
+			// tenant).
+			const context: OrgServicesContext = {
+				antiBanConfig,
+				clock,
+				cadenceQueue: (organizationId) => cadenceJobQueue(boss, organizationId),
+				outboundQueue: (organizationId) =>
+					outboundSendQueue(boss, organizationId),
+				envNotifyNumbers: parseConsultantNumbers(
+					process.env.CONSULTANT_NOTIFY_NUMBERS,
 				),
-				resolveFromNumberId: () =>
-					resolveNotifyFromNumberId(
-						numbers,
-						process.env.CONSULTANT_NOTIFY_FROM_NUMBER,
-					),
+				notifyFromNumber: process.env.CONSULTANT_NOTIFY_FROM_NUMBER,
 				crmBaseUrl: process.env.CRM_BASE_URL,
-			});
-			const handoff = createHandoffManager({
-				lifecycle,
-				handoffEvents: handoffRepo,
-				scheduledJobs,
-				notifier: handoffNotifier,
-			});
-			const scoring = createScoringEngine({
-				leads,
-				clock,
-				sendWindow: {
-					startHour: antiBanConfig.sendWindow.startHour,
-					endHour: antiBanConfig.sendWindow.endHour,
-				},
-			});
-			const antiBan = createAntiBanController({
-				numbers,
-				config: antiBanConfig,
-				clock,
-			});
-
-			// Durable queues.
-			const outboundQueue = outboundSendQueue(boss);
-			const inboundQueue = inboundProcessingQueue(boss);
-
-			// Schedulers (enrollment + monthly nurture) over the durable queues.
-			const cadenceScheduler = createCadenceScheduler({
-				lifecycle,
-				scheduledJobs,
-				queue: cadenceJobQueue(boss),
-			});
-			const nurtureScheduler = createNurtureScheduler({
-				lifecycle,
-				scheduledJobs,
-				queue: nurtureJobQueue(boss),
-				clock,
-			});
-
-			// Workers (the pg-boss handler domain logic).
-			const cadenceWorker = createCadenceWorker({
-				leads,
-				cadence: cadenceScheduler,
-				outbound: outboundQueue,
-				lifecycle,
-				nurture: nurtureScheduler,
-				scheduledJobs,
-				messages: messageGenerator,
-			});
-			const nurtureWorker = createNurtureWorker({
-				leads,
-				outbound: outboundQueue,
-				nurture: nurtureScheduler,
-				messages: messageGenerator,
-			});
-			const outboundWorker = createOutboundWorker({
-				leads,
-				antiBan,
-				waha,
-				commit: createSequentialOutboundSendCommitter({ antiBan, messages }),
-				clock,
-			});
-
-			// The source-agnostic importer, enrolling new leads through the same
-			// `Cadence_Scheduler` every future real-time source will use (Req 2.2,
-			// 2.3, 3.1).
-			const importer = createLeadImporter({
-				leads,
-				cadence: cadenceScheduler,
-				clock,
-			});
+			};
 
 			return {
 				boss,
 				antiBanConfig,
 				clock,
-				leads,
-				messages,
-				numbers,
-				scheduledJobs,
-				templates,
-				setMessageTemplates,
-				antiBan,
-				lifecycle,
-				compliance,
-				handoff,
-				scoring,
-				cadenceScheduler,
-				nurtureScheduler,
-				cadenceWorker,
-				nurtureWorker,
-				outboundWorker,
-				outboundQueue,
-				inboundQueue,
-				importer,
-				waha,
+				forOrg: (organizationId, database) =>
+					getOrgServices(organizationId, context, database),
+				inboundQueue: (organizationId) =>
+					inboundProcessingQueue(boss, organizationId),
 			};
 		})();
 	}
@@ -597,7 +387,8 @@ function nextLocalMidnight(now: Date): Date {
  */
 async function processOutboundRequest(
 	rt: Runtime,
-	request: OutboundSendRequest,
+	org: OrgServices,
+	request: OutboundSendPayload,
 ): Promise<void> {
 	const now = rt.clock.now();
 	const log = childLogger({
@@ -605,12 +396,16 @@ async function processOutboundRequest(
 		leadId: request.leadId,
 	});
 	log.info(
-		{ event: "outbound.processing", kind: request.kind },
+		{
+			event: "outbound.processing",
+			kind: request.kind,
+			organizationId: org.organizationId,
+		},
 		"processing outbound send",
 	);
 
 	// Outside the global send window → defer to the window reopening (Req 17.4).
-	if (!rt.antiBan.withinSendWindow()) {
+	if (!org.antiBan.withinSendWindow()) {
 		log.warn(
 			{ event: "outbound.deferred", kind: request.kind, reason: "window" },
 			"outside send window; deferring",
@@ -621,19 +416,22 @@ async function processOutboundRequest(
 		return;
 	}
 
-	const candidates = await rt.numbers.listAvailable();
+	// Only this organization's numbers are ever candidates: `org.numbers` is
+	// bound to the tenant, so a send can never go out from another tenant's
+	// WhatsApp number.
+	const candidates = await org.numbers.listAvailable();
 	if (candidates.length === 0) {
 		log.warn(
-			{ event: "outbound.no_number" },
+			{ event: "outbound.no_number", organizationId: org.organizationId },
 			"no available WhatsApp numbers registered — nothing can be sent. Add a " +
 				"sending number in the CRM (Numbers page) / `numbers` table.",
 		);
 	}
 	for (const number of candidates) {
-		if (!(await rt.antiBan.canAssignSend(number.id))) {
+		if (!(await org.antiBan.canAssignSend(number.id))) {
 			continue;
 		}
-		const outcome = await rt.outboundWorker.process({
+		const outcome = await org.outboundWorker.process({
 			leadId: request.leadId,
 			numberId: number.id,
 			content: request.content,
@@ -654,13 +452,12 @@ async function processOutboundRequest(
 				return;
 			case "dropped_unreachable":
 				// WAHA confirmed the number does not exist on WhatsApp. Mark the lead
-				// unreachable and cancel its pending cadence + nurture jobs so no
-				// further automated outreach is attempted (same outreach-stopping
-				// pattern the inbound handler uses on a reply). Terminal: the job is
+				// unreachable and cancel its pending cadence jobs so no further
+				// automated outreach is attempted (same outreach-stopping pattern the
+				// inbound handler uses on a reply). Terminal: the job is
 				// acknowledged (no throw), so it is never retried.
-				await rt.leads.markUnreachable(request.leadId, now);
-				await rt.cadenceScheduler.cancelAll(request.leadId);
-				await rt.nurtureScheduler.cancel(request.leadId);
+				await org.leads.markUnreachable(request.leadId, now);
+				await org.cadenceScheduler.cancelAll(request.leadId);
 				log.warn(
 					{ event: "outbound.unreachable", numberId: number.id },
 					"number unreachable on WhatsApp; lead marked + outreach cancelled",
@@ -690,62 +487,48 @@ async function processOutboundRequest(
 }
 
 // ---------------------------------------------------------------------------
-// Inbound consumer wiring (worker entry point only)
+// Tenant resolution for dequeued jobs (worker entry point only)
 // ---------------------------------------------------------------------------
 
 /**
- * Wrap a {@link MessageRepository} so `append` is idempotent on the inbound
- * `wa_message_id`: the webhook already persisted the raw inbound message before
- * enqueuing, so the worker-side {@link InboundHandler} must NOT insert it again
- * (GUIA_ARQUITETURA_COMPLETO §14.2 #3). When a message with the same
- * `wa_message_id` already exists, the existing record is returned instead of a
- * second insert; everything else delegates unchanged.
+ * Resolve which organization a dequeued job belongs to.
+ *
+ * Jobs enqueued from this deploy onward carry `organizationId` in the payload.
+ * pg-boss still holds up to a retention window of jobs enqueued BEFORE the
+ * tenancy retrofit, whose payloads have only a `leadId`; for those the tenant is
+ * recovered from the lead itself so the backlog drains instead of failing.
+ *
+ * Remove the fallback (and `resolveOrganizationIdForLead`) once the
+ * pre-retrofit backlog has aged out.
+ *
+ * @returns The organization, or `null` when it cannot be determined — the caller
+ *   acknowledges the job rather than retrying it forever.
  */
-function idempotentInboundMessages(
-	messages: MessageRepository,
-): MessageRepository {
-	return {
-		listByLead: (leadId) => messages.listByLead(leadId),
-		findByWaMessageId: (waMessageId) => messages.findByWaMessageId(waMessageId),
-		async append(input) {
-			if (input.waMessageId) {
-				const existing = await messages.findByWaMessageId(input.waMessageId);
-				if (existing) {
-					return existing;
-				}
-			}
-			return messages.append(input);
-		},
-	};
-}
-
-/** Resolve the domain `numberId` for the WAHA session that received a message. */
-export async function resolveNumberIdForSession(
-	rt: Runtime,
-	session: string,
-): Promise<string | undefined> {
-	const all = await rt.numbers.listAll();
-	return all.find((n) => n.sessionName === session)?.id;
-}
-
-/**
- * Compose the {@link InboundHandler} for the worker: wires the already-built
- * managers/repositories from the runtime, with the idempotent message wrapper so
- * the webhook's raw inbound is not re-persisted. In the beta flow a reply hands
- * the Lead straight off to a consultant via {@link Runtime.handoff}; there is no
- * AI qualification turn.
- */
-export function createRuntimeInboundHandler(rt: Runtime): InboundHandler {
-	return createInboundHandler({
-		leads: rt.leads,
-		messages: idempotentInboundMessages(rt.messages),
-		waha: rt.waha,
-		compliance: rt.compliance,
-		cadence: rt.cadenceScheduler,
-		nurture: rt.nurtureScheduler,
-		scoring: rt.scoring,
-		handoff: rt.handoff,
-	});
+async function resolveJobOrganization(
+	payload: { organizationId?: string; leadId: string },
+	queue: string,
+): Promise<string | null> {
+	if (payload.organizationId) {
+		return payload.organizationId;
+	}
+	const recovered = await resolveOrganizationIdForLead(payload.leadId);
+	if (recovered) {
+		logger.warn(
+			{
+				event: "job.org_backfilled",
+				queue,
+				leadId: payload.leadId,
+				organizationId: recovered,
+			},
+			"job predates the tenancy retrofit; organization recovered from its lead",
+		);
+		return recovered;
+	}
+	logger.error(
+		{ event: "job.org_unresolved", queue, leadId: payload.leadId },
+		"cannot determine the organization for this job; dropping it",
+	);
+	return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -753,60 +536,90 @@ export function createRuntimeInboundHandler(rt: Runtime): InboundHandler {
 // ---------------------------------------------------------------------------
 
 /**
- * Register the cadence, nurture, and outbound pg-boss job handlers on the
- * worker process (design "Entry points"). Each handler delegates to the
- * already-wired worker domain logic; this function only adapts the pg-boss job
- * envelope (an array of jobs carrying the typed payload) to a `process` call.
+ * Register the cadence, outbound, and inbound pg-boss job handlers on the
+ * worker process (design "Entry points"). Each handler adapts the pg-boss job
+ * envelope to a `process` call on the domain logic.
+ *
+ * Every handler starts by resolving the job's organization and rebuilding that
+ * tenant's domain layer (`rt.forOrg`). The worker process therefore serves all
+ * organizations while each individual job acts through repositories bound to
+ * exactly one — a job can neither read nor write another tenant's rows, and a
+ * job whose tenant cannot be resolved is dropped rather than run unscoped.
  *
  * Only the long-running worker calls this — the web app enqueues but never
- * consumes. This includes the inbound queue: its pipeline (scoring and the
- * handoff to a consultant) runs here via {@link createRuntimeInboundHandler},
- * while the webhook only persists and enqueues durably so no inbound delivery is
- * lost.
+ * consumes. This includes the inbound queue: its pipeline runs here, while the
+ * webhook only persists and enqueues durably so no inbound delivery is lost.
  */
 export async function registerWorkers(rt: Runtime): Promise<void> {
-	await rt.boss.work<CadenceTouchJob>(QUEUE_NAMES.cadence, async (jobs) => {
-		// Refresh editable message templates so operator edits apply on the next
-		// batch without restarting the worker.
-		rt.setMessageTemplates(await rt.templates.getAll());
-		for (const job of jobs) {
-			logger.debug(
-				{ event: "job.processing", queue: QUEUE_NAMES.cadence, jobId: job.id },
-				"processing cadence job",
-			);
-			await rt.cadenceWorker.process(job.data);
-		}
-	});
-
-	await rt.boss.work<NurtureJob>(QUEUE_NAMES.nurture, async (jobs) => {
-		rt.setMessageTemplates(await rt.templates.getAll());
-		for (const job of jobs) {
-			await rt.nurtureWorker.process(job.data);
-		}
-	});
-
-	await rt.boss.work<OutboundSendRequest>(
-		QUEUE_NAMES.outbound,
+	await rt.boss.work<CadenceTouchJobPayload>(
+		QUEUE_NAMES.cadence,
 		async (jobs) => {
 			for (const job of jobs) {
-				await processOutboundRequest(rt, job.data);
+				const organizationId = await resolveJobOrganization(
+					job.data,
+					QUEUE_NAMES.cadence,
+				);
+				if (!organizationId) {
+					continue;
+				}
+				logger.debug(
+					{
+						event: "job.processing",
+						queue: QUEUE_NAMES.cadence,
+						jobId: job.id,
+						organizationId,
+					},
+					"processing cadence job",
+				);
+				const org = rt.forOrg(organizationId);
+				// Load this organization's own template customizations before
+				// rendering, so operator edits apply on the next job without
+				// restarting the worker — and so one tenant's templates are never
+				// rendered for another's lead.
+				await org.refreshTemplates();
+				await org.cadenceWorker.process(job.data);
 			}
 		},
 	);
 
+	await rt.boss.work<OutboundSendPayload>(QUEUE_NAMES.outbound, async (jobs) => {
+		for (const job of jobs) {
+			const organizationId = await resolveJobOrganization(
+				job.data,
+				QUEUE_NAMES.outbound,
+			);
+			if (!organizationId) {
+				continue;
+			}
+			await processOutboundRequest(rt, rt.forOrg(organizationId), {
+				...job.data,
+				organizationId,
+			});
+		}
+	});
+
 	// Inbound processing: the webhook persists + enqueues each inbound message;
 	// this is the consumer that runs the Inbound_Handler pipeline (sendSeen,
-	// opt-out, cadence/nurture cancellation, scoring, and the handoff to a
-	// consultant). Previously unregistered, so replies were enqueued but never
-	// processed (GUIA_ARQUITETURA_COMPLETO §14.2 #2). The message append is made
-	// idempotent so the raw inbound persisted at the webhook is not double-written
-	// (#3).
-	const inboundHandler = createRuntimeInboundHandler(rt);
-	await rt.boss.work<InboundProcessingJob>(
+	// opt-out, cadence cancellation, and the handoff to a consultant). The
+	// message append is made idempotent (inside `getOrgServices`) so the raw
+	// inbound persisted at the webhook is not double-written.
+	await rt.boss.work<InboundProcessingPayload>(
 		QUEUE_NAMES.inbound,
 		async (jobs) => {
 			for (const job of jobs) {
-				const numberId = await resolveNumberIdForSession(rt, job.data.session);
+				const organizationId = await resolveJobOrganization(
+					job.data,
+					QUEUE_NAMES.inbound,
+				);
+				if (!organizationId) {
+					continue;
+				}
+				const org = rt.forOrg(organizationId);
+				// The receiving number is looked up within the organization, so a
+				// session name is only honored for the tenant that registered it.
+				const numberId = (await org.numbers.listAll()).find(
+					(n) => n.sessionName === job.data.session,
+				)?.id;
 				const msg: InboundMessage = {
 					from: job.data.from,
 					text: job.data.text,
@@ -826,11 +639,12 @@ export async function registerWorkers(rt: Runtime): Promise<void> {
 						event: "inbound.processing",
 						numberId: numberId ?? null,
 						session: job.data.session,
+						organizationId,
 					},
 					"processing inbound reply",
 				);
 				try {
-					await inboundHandler.handle(msg);
+					await org.inboundHandler.handle(msg);
 					log.info(
 						{ event: "inbound.completed", durationMs: Date.now() - startedAt },
 						"inbound pipeline completed",

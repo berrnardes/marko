@@ -37,7 +37,7 @@ const ENROLLED_AT = new Date("2024-03-10T13:00:00.000Z");
  * then rejects further enrollments (mirroring the compare-and-set guard: a lead
  * that already left `COLD_QUEUED` cannot be enrolled again).
  */
-function makeLifecycle(initial: LifecycleState = "COLD_QUEUED"): {
+function makeLifecycle(initial: LifecycleState = "QUEUED"): {
 	manager: LifecycleManager;
 	state: { value: LifecycleState };
 } {
@@ -48,7 +48,7 @@ function makeLifecycle(initial: LifecycleState = "COLD_QUEUED"): {
 				_leadId: string,
 				to: LifecycleState,
 			): Promise<TransitionResult> => {
-				if (state.value === "COLD_QUEUED" && to === "IN_CADENCE") {
+				if (state.value === "QUEUED" && to === "IN_CADENCE") {
 					const from = state.value;
 					state.value = to;
 					return { ok: true, from, to };

@@ -11,10 +11,17 @@
 //
 // Beta flow (no AI qualification): the conversational qualification agent has
 // been removed. A Lead that replies to the cadence is handed straight to a human
-// consultant — `Handoff_Manager` moves the Lead to `HOT`, records a `replied`
-// handoff event, and silences further automation. The consultant then continues
-// the conversation on the same WhatsApp number (via a WhatsApp Web linked
-// device); those replies are ingested back as outbound echoes in the webhook.
+// consultant — `Handoff_Manager` moves the Lead to `REPLIED`, records a
+// `replied` handoff event, and silences further automation. The consultant then
+// continues the conversation on the same WhatsApp number (via a WhatsApp Web
+// linked device); those replies are ingested back as outbound echoes in the
+// webhook.
+//
+// Not every inbound message is a reply-to-the-cadence, though. ADR-003 rule 2
+// restricts the transition to Leads in `IN_CADENCE` or `COMPLETED`: once a Lead
+// is with its consultant, the messages that follow are part of THAT
+// conversation and must not re-alert anyone. The pure `stateAfterReply` encodes
+// that rule; this handler is where it is applied.
 //
 // Side-effect boundary: this module performs all persistence/orchestration I/O
 // through injected INTERFACE dependencies only (never concrete Drizzle/DB code):
@@ -25,9 +32,8 @@
 //   - `WahaClient`         — resolve the chat id and send the read receipt
 //     (`sendSeen`, Req 17.3);
 //   - `ComplianceManager`  — apply an opt-out when detected (Req 15.1);
-//   - `CadenceScheduler` / `NurtureScheduler` — cancel pending outreach when the
-//     Lead replies (Req 7.2, 6.4);
-//   - `ScoringEngine`      — recompute the Lead's Score on the inbound (Req 11.1);
+//   - `CadenceScheduler`   — cancel pending outreach when the Lead replies
+//     (Req 7.2);
 //   - `HandoffManager`     — hand the replying Lead off to a consultant (Req 13).
 //
 // Opt-out *detection* is the pure `detectOptOut` predicate in `@/core`; phone
@@ -35,15 +41,15 @@
 // those pure checks to their persisted consequences.
 
 import { detectOptOut, normalizePhone } from "@/core";
+import { stateAfterReply } from "@/core/lifecycle";
+import { logger } from "@/logger";
 import type { CadenceScheduler } from "@/services/cadence-scheduler";
 import type { ComplianceManager } from "@/services/compliance-manager";
 import type { HandoffManager } from "@/services/handoff-manager";
-import type { NurtureScheduler } from "@/services/nurture-scheduler";
 import type {
 	LeadRepository,
 	MessageRepository,
 } from "@/services/repositories";
-import type { ScoringEngine } from "@/services/scoring-engine";
 import type { WahaClient } from "@/services/waha-client";
 
 // ---------------------------------------------------------------------------
@@ -120,12 +126,15 @@ export interface InboundHandler {
 	 *   4. Detect an opt-out request (`detectOptOut`); when present, apply the
 	 *      opt-out (set `opt_out`, transition to `OPTED_OUT`, cancel all
 	 *      outreach) and STOP — no handoff for an opted-out Lead (Req 15.1).
-	 *   5. Otherwise cancel all pending cadence and nurture jobs for the Lead, so
-	 *      a reply silences the outreach it was receiving (Req 7.2, 6.4).
-	 *   6. Recompute the Lead's Score on the inbound signal (Req 11.1).
+	 *   5. Stop unless the reply should transition the Lead (`stateAfterReply`,
+	 *      ADR-003 rule 2): only `IN_CADENCE` and `COMPLETED` react. A Lead
+	 *      already with its consultant records the message and nothing else.
+	 *   6. Cancel all pending cadence jobs for the Lead, so a reply silences the
+	 *      outreach it was receiving (Req 7.2).
 	 *   7. Hand the Lead off to a human consultant with reason `replied`: the
-	 *      `Handoff_Manager` moves the Lead to `HOT`, records the handoff event,
-	 *      and cancels any remaining automated outreach (Req 13).
+	 *      `Handoff_Manager` moves the Lead to `REPLIED`, records the handoff
+	 *      event, cancels any remaining outreach, and alerts the consultant
+	 *      (Req 13).
 	 *
 	 * @param msg - The inbound message to process.
 	 * @throws {InvalidInboundSenderError} when the sender id cannot be normalized.
@@ -149,10 +158,6 @@ export interface InboundHandlerConfig {
 	compliance: ComplianceManager;
 	/** Cancel the Lead's pending cadence touches on reply (Req 7.2). */
 	cadence: CadenceScheduler;
-	/** Cancel the Lead's pending monthly nurture on reply (Req 6.4). */
-	nurture: NurtureScheduler;
-	/** Recompute the Lead's Score on the inbound (Req 11.1). */
-	scoring: ScoringEngine;
 	/** Hand the replying Lead off to a human consultant (Req 13). */
 	handoff: HandoffManager;
 	/**
@@ -171,9 +176,9 @@ export const DEFAULT_INBOUND_SOURCE = "whatsapp_inbound";
 
 /**
  * Concrete {@link InboundHandler} backed by the injected repository, manager,
- * scheduler, scoring, and handoff dependencies. Stateless beyond its
- * dependencies; every call runs the ordered pipeline through the interfaces it
- * was constructed with and performs no other I/O.
+ * scheduler, and handoff dependencies. Stateless beyond its dependencies; every
+ * call runs the ordered pipeline through the interfaces it was constructed with
+ * and performs no other I/O.
  */
 export class InboundHandlerService implements InboundHandler {
 	private readonly leads: LeadRepository;
@@ -181,8 +186,6 @@ export class InboundHandlerService implements InboundHandler {
 	private readonly waha: WahaClient;
 	private readonly compliance: ComplianceManager;
 	private readonly cadence: CadenceScheduler;
-	private readonly nurture: NurtureScheduler;
-	private readonly scoring: ScoringEngine;
 	private readonly handoff: HandoffManager;
 	private readonly inboundSource: string;
 
@@ -192,8 +195,6 @@ export class InboundHandlerService implements InboundHandler {
 		this.waha = deps.waha;
 		this.compliance = deps.compliance;
 		this.cadence = deps.cadence;
-		this.nurture = deps.nurture;
-		this.scoring = deps.scoring;
 		this.handoff = deps.handoff;
 		this.inboundSource = deps.inboundSource ?? DEFAULT_INBOUND_SOURCE;
 	}
@@ -241,26 +242,40 @@ export class InboundHandlerService implements InboundHandler {
 			return;
 		}
 
-		// 5. Cancel pending outreach the Lead was receiving (Req 7.2, 6.4). Both
-		//    cancels are no-ops when there is nothing pending (e.g. a brand-new
-		//    Lead), so they are safe to run unconditionally. The handoff below also
-		//    cancels the Lead's scheduled jobs; running these first stops the
-		//    scheduler-level outreach immediately and is idempotent.
+		// 5. Decide whether THIS message is a handoff at all (ADR-003 rule 2). Only
+		//    a Lead in `IN_CADENCE` or `COMPLETED` transitions on a reply; one
+		//    already in `REPLIED`, `WON`, or `LOST` is mid-conversation with its
+		//    consultant, and every further message it sends must change nothing and
+		//    alert nobody. Note this asks `stateAfterReply`, NOT the transition
+		//    table: `WON → REPLIED` is a lawful *manual* correction, so the table
+		//    would accept it and an inbound message would silently reopen a closed
+		//    Lead.
+		//
+		//    The Lead read in step 1 is fresh — this handler runs off the inbound
+		//    queue and re-read it at the top — so the state is current.
+		if (stateAfterReply(lead.lifecycleState) === null) {
+			logger.info(
+				{
+					event: "inbound.no_transition",
+					leadId: lead.id,
+					state: lead.lifecycleState,
+				},
+				"reply from a lead already with the consultant; recorded without " +
+					"changing state or alerting",
+			);
+			return;
+		}
+
+		// 6. Cancel pending outreach the Lead was receiving (Req 7.2). A no-op when
+		//    there is nothing pending — which is exactly the late-reply case, where
+		//    the Lead is `COMPLETED` and its five touches are already spent.
 		await this.cadence.cancelAll(lead.id);
-		await this.nurture.cancel(lead.id);
 
-		// 6. Recompute the Lead's Score on the inbound signal so the CRM reflects
-		//    the reply's effect on the Lead's band before the consultant sees it
-		//    (Req 11.1).
-		await this.scoring.recompute(lead.id);
-
-		// 7. Hand the Lead off to a human consultant (Req 13). In the beta flow any
-		//    reply hands the Lead straight to a consultant: the `Handoff_Manager`
-		//    moves the Lead to `HOT` regardless of its current funnel stage, records
-		//    a `replied` handoff event, and cancels any remaining automated outreach
-		//    so no further automated message is sent (Req 13.1–13.4). The consultant
-		//    continues the conversation on the same number from a WhatsApp Web linked
-		//    device.
+		// 7. Hand the Lead off to a human consultant (Req 13, ADR-003 rule 3). The
+		//    `Handoff_Manager` moves the Lead to `REPLIED`, records the `replied`
+		//    handoff event, cancels any remaining automated outreach, and alerts the
+		//    consultant on WhatsApp. The consultant then continues the conversation
+		//    on the same number from a WhatsApp Web linked device.
 		await this.handoff.handoff(lead.id, "replied");
 	}
 

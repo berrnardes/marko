@@ -8,11 +8,10 @@
 // uses (Req 1.4, 1.5, 2.1, 20.3). Lifecycle moves use a compare-and-set on
 // `lifecycle_state` for optimistic concurrency (Req 14.1, 19.4).
 
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, type SQL } from "drizzle-orm";
 
 import { brazilianPhoneVariants } from "@/core";
 import type {
-	ClassificationBand,
 	LeadSnapshot,
 	LifecycleState,
 	OptInStatus,
@@ -37,10 +36,8 @@ function toSnapshot(row: LeadRow): LeadSnapshot {
 		lifecycleState: row.lifecycleState,
 		optInStatus: row.optInStatus,
 		optInAt: row.optInAt,
-		score: row.score,
 		blocked: row.blocked,
 		unreachableAt: row.unreachableAt,
-		classificationBand: row.classificationBand,
 		qualification: {
 			segment: row.segment,
 			creditValue: row.creditValue,
@@ -57,14 +54,29 @@ function toSnapshot(row: LeadRow): LeadSnapshot {
 }
 
 /**
- * Concrete {@link LeadRepository} over Drizzle/PostgreSQL. Stateless beyond the
- * injected database client; safe to construct per request.
+ * Concrete {@link LeadRepository} over Drizzle/PostgreSQL, bound to ONE
+ * organization at construction. Every read and write this repository performs is
+ * filtered by that `organizationId`, so a lead id belonging to another tenant
+ * simply does not resolve — there is no method that can reach across orgs.
+ * Stateless beyond the injected org + database client; safe to construct per
+ * request.
  */
 export class DrizzleLeadRepository implements LeadRepository {
+	private readonly organizationId: string;
 	private readonly database: Database;
 
-	constructor(database: Database = db) {
+	constructor(organizationId: string, database: Database = db) {
+		this.organizationId = organizationId;
 		this.database = database;
+	}
+
+	/**
+	 * Narrow `condition` to this repository's organization. Every query in this
+	 * class goes through here, so the tenant filter cannot be forgotten on a new
+	 * method by accident.
+	 */
+	private scoped(condition: SQL): SQL {
+		return and(eq(leads.organizationId, this.organizationId), condition) as SQL;
 	}
 
 	/** @inheritdoc */
@@ -72,7 +84,7 @@ export class DrizzleLeadRepository implements LeadRepository {
 		const [row] = await this.database
 			.select()
 			.from(leads)
-			.where(eq(leads.id, leadId));
+			.where(this.scoped(eq(leads.id, leadId)));
 		return row ? toSnapshot(row) : null;
 	}
 
@@ -87,17 +99,21 @@ export class DrizzleLeadRepository implements LeadRepository {
 		const [row] = await this.database
 			.select()
 			.from(leads)
-			.where(inArray(leads.phoneE164, variants));
+			.where(this.scoped(inArray(leads.phoneE164, variants)));
 		return row ? toSnapshot(row) : null;
 	}
 
 	/** @inheritdoc */
 	async create(input: NewLeadInput): Promise<LeadSnapshot> {
 		// New leads start `COLD_QUEUED` (the column default) recording their
-		// originating source (Req 1.5, 2.1) and any name the source supplied.
+		// originating source (Req 1.5, 2.1) and any name the source supplied. The
+		// same phone may exist once per organization — the uniqueness constraint is
+		// `(organization_id, phone_e164)`, so two tenants importing the same number
+		// get two independent leads.
 		const [row] = await this.database
 			.insert(leads)
 			.values({
+				organizationId: this.organizationId,
 				phoneE164: input.phoneE164,
 				source: input.source,
 				displayName: input.displayName ?? null,
@@ -114,21 +130,7 @@ export class DrizzleLeadRepository implements LeadRepository {
 		const [row] = await this.database
 			.update(leads)
 			.set({ ...patch, updatedAt: new Date() })
-			.where(eq(leads.id, leadId))
-			.returning();
-		return toSnapshot(row);
-	}
-
-	/** @inheritdoc */
-	async updateScore(
-		leadId: string,
-		score: number,
-		band: ClassificationBand,
-	): Promise<LeadSnapshot> {
-		const [row] = await this.database
-			.update(leads)
-			.set({ score, classificationBand: band, updatedAt: new Date() })
-			.where(eq(leads.id, leadId))
+			.where(this.scoped(eq(leads.id, leadId)))
 			.returning();
 		return toSnapshot(row);
 	}
@@ -145,7 +147,14 @@ export class DrizzleLeadRepository implements LeadRepository {
 		const [row] = await this.database
 			.update(leads)
 			.set({ lifecycleState: to, updatedAt: new Date() })
-			.where(and(eq(leads.id, leadId), eq(leads.lifecycleState, expectedFrom)))
+			.where(
+				this.scoped(
+					and(
+						eq(leads.id, leadId),
+						eq(leads.lifecycleState, expectedFrom),
+					) as SQL,
+				),
+			)
 			.returning();
 		return row ? toSnapshot(row) : null;
 	}
@@ -159,7 +168,7 @@ export class DrizzleLeadRepository implements LeadRepository {
 		await this.database
 			.update(leads)
 			.set({ optInStatus: status, optInAt: at, updatedAt: new Date() })
-			.where(eq(leads.id, leadId));
+			.where(this.scoped(eq(leads.id, leadId)));
 	}
 
 	/** @inheritdoc */
@@ -167,7 +176,7 @@ export class DrizzleLeadRepository implements LeadRepository {
 		await this.database
 			.update(leads)
 			.set({ blocked, updatedAt: new Date() })
-			.where(eq(leads.id, leadId));
+			.where(this.scoped(eq(leads.id, leadId)));
 	}
 
 	/** @inheritdoc */
@@ -175,7 +184,7 @@ export class DrizzleLeadRepository implements LeadRepository {
 		await this.database
 			.update(leads)
 			.set({ unreachableAt: at, updatedAt: new Date() })
-			.where(eq(leads.id, leadId));
+			.where(this.scoped(eq(leads.id, leadId)));
 	}
 
 	/** @inheritdoc */
@@ -183,6 +192,32 @@ export class DrizzleLeadRepository implements LeadRepository {
 		await this.database
 			.update(leads)
 			.set({ assignedConsultantId: consultantId, updatedAt: new Date() })
-			.where(eq(leads.id, leadId));
+			.where(this.scoped(eq(leads.id, leadId)));
 	}
+}
+
+/**
+ * Resolve which organization owns a lead — deliberately NOT org-scoped.
+ *
+ * BACKLOG COMPATIBILITY ONLY. pg-boss holds up to 31 days of jobs enqueued
+ * before the tenancy retrofit, whose payloads carry a `leadId` but no
+ * `organizationId`. The workers use this to recover the tenant for those jobs
+ * so the backlog drains instead of failing. Every job enqueued from this deploy
+ * onward carries its organization in the payload.
+ *
+ * DELETE this function, and the fallback that calls it, once the pre-retrofit
+ * backlog has aged out (see the pg-boss retention window).
+ *
+ * @returns The owning organization, or `null` when the lead no longer exists.
+ */
+export async function resolveOrganizationIdForLead(
+	leadId: string,
+	database: Database = db,
+): Promise<string | null> {
+	const [row] = await database
+		.select({ organizationId: leads.organizationId })
+		.from(leads)
+		.where(eq(leads.id, leadId))
+		.limit(1);
+	return row?.organizationId ?? null;
 }

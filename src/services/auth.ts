@@ -33,10 +33,23 @@ import { db } from "@/db/client";
  * hard-coded): `BETTER_AUTH_SECRET` and `BETTER_AUTH_URL`.
  *
  * Multi-tenancy: the `organization` plugin models each customer as an
- * organization (tenant). Public self-service registration is open — the
- * `/signup` page creates the user and their organization in one flow — and
- * the session-creation hook stamps `activeOrganizationId` from the user's
- * first membership so every login lands scoped to their tenant.
+ * organization (tenant). The session-creation hook stamps
+ * `activeOrganizationId` from the user's first membership so every login lands
+ * scoped to their tenant.
+ *
+ * Self-service registration is CLOSED (`disableSignUp`) until the tenancy
+ * retrofit lands. It was closed as containment for the production leak ADR-001
+ * exists to fix: the domain tables did not filter by organization, so a newly
+ * registered account read the existing tenant's leads.
+ *
+ * Status: PR2 landed — every domain query is now organization-scoped
+ * (repositories are bound to one organization at construction, see
+ * `@/services/org-runtime`). Two things still gate re-opening:
+ *   1. the contract migration `0002` must be applied in production, so
+ *      `organization_id` is `NOT NULL` and the composite uniques exist; and
+ *   2. PR3's row-level policies must be in place, so a query that forgets its
+ *      filter returns nothing instead of everything.
+ * Re-open this — and delete this paragraph — only once both hold.
  */
 export const auth = betterAuth({
 	database: drizzleAdapter(db, {
@@ -47,6 +60,7 @@ export const auth = betterAuth({
 	baseURL: process.env.BETTER_AUTH_URL,
 	emailAndPassword: {
 		enabled: true,
+		disableSignUp: true,
 	},
 	user: {
 		additionalFields: {

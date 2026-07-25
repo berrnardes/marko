@@ -15,7 +15,7 @@ import {
 	MessageHistoryCard,
 	QualificationCard,
 } from "../_components/lead-detail";
-import { PageHeader, ScoreBadge, StatusNote } from "../_components/ui";
+import { LifecycleBadge, PageHeader, StatusNote } from "../_components/ui";
 import { useHandoffs } from "../_lib/api";
 
 export default function HandoffsPage() {
@@ -59,10 +59,7 @@ export default function HandoffsPage() {
 									}`}
 								>
 									<span className="font-medium">{lead.phoneE164}</span>
-									<ScoreBadge
-										score={lead.score}
-										band={lead.classificationBand}
-									/>
+									<LifecycleBadge state={lead.lifecycleState} />
 								</button>
 							</li>
 						))}

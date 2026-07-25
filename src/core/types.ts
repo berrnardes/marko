@@ -6,31 +6,35 @@
 // these declarations. Shapes mirror the design's Components/Interfaces and Data
 // Models sections.
 
-// `ClassificationBand` is owned by the score-band classifier (Req 12); it is
-// re-exported here so consumers of `LeadSnapshot` and the repository
-// interfaces continue to see it on the core types module.
-export type { ClassificationBand } from "./classify";
-import type { ClassificationBand } from "./classify";
-
 // ---------------------------------------------------------------------------
 // Lifecycle and lawful-basis enums
 // ---------------------------------------------------------------------------
 
 /**
- * The single lifecycle state a Lead occupies at any time (Req 14.1, 19.1).
- * Transitions between these states are governed by the lifecycle transition
- * table (implemented in a later task); `OPTED_OUT` is terminal (Req 14.4).
+ * The single lifecycle state a Lead occupies at any time (ADR-003, Req 14.1,
+ * 19.1). Seven states, in the order a lead travels them:
+ *
+ *   - `QUEUED`     — imported, not yet enrolled into the cadence.
+ *   - `IN_CADENCE` — receiving the five touches.
+ *   - `REPLIED`    — the lead answered; the consultant owns it from here.
+ *   - `COMPLETED`  — all five touches went out with no reply. Not terminal: a
+ *     late reply still moves it to `REPLIED`, and the consultant may re-enqueue
+ *     it back to `QUEUED`.
+ *   - `WON` / `LOST` — the outcome, set manually by the consultant and
+ *     reversible through `REPLIED`. No automation ever writes these.
+ *   - `OPTED_OUT`  — terminal, reachable from anywhere; no outbound is ever
+ *     sent again.
+ *
+ * The transition table in `./lifecycle` is the executable source of truth and
+ * mirrors the diagram in `docs/adr/003-maquina-de-estados-do-lead.md`.
  */
 export type LifecycleState =
-	| "COLD_QUEUED"
+	| "QUEUED"
 	| "IN_CADENCE"
 	| "REPLIED"
-	| "QUALIFYING"
-	| "HOT"
-	| "WARM"
-	| "DISQUALIFIED"
-	| "CADENCE_EXHAUSTED"
-	| "MONTHLY_NURTURE"
+	| "COMPLETED"
+	| "WON"
+	| "LOST"
 	| "OPTED_OUT";
 
 /** The LGPD lawful-basis flag carried by every Lead (Req 15, 19.1). */
@@ -142,8 +146,6 @@ export interface LeadSnapshot {
 	optInStatus: OptInStatus;
 	/** Timestamp of the current lawful-basis value, when known. */
 	optInAt: Date | null;
-	/** Qualification score in 0–100. */
-	score: number;
 	/** Anti-ban / block flag re-checked by the send guard (Req 5.3, 18). */
 	blocked: boolean;
 	/**
@@ -152,8 +154,6 @@ export interface LeadSnapshot {
 	 * further automated outreach is attempted (see {@link evaluateSendGuard}).
 	 */
 	unreachableAt: Date | null;
-	/** Current score-band label, when classified (Req 12). */
-	classificationBand: ClassificationBand | null;
 	/** Progressively-filled qualification fields. */
 	qualification: QualificationFields;
 	/** Consultant the lead is assigned to after handoff, when any (Req 13). */

@@ -6,7 +6,7 @@
 
 import { NextResponse, type NextRequest } from "next/server";
 
-import { denyIfUnauthenticated } from "@/app/api/crm/_lib/guard";
+import { requireOrgSession } from "@/app/api/crm/_lib/guard";
 import type {
 	TemplatesResponse,
 	TemplateView,
@@ -19,6 +19,7 @@ import {
 } from "@/core/messages";
 import type { TemplateKey } from "@/core/types";
 import { DrizzleMessageTemplateRepository } from "@/db/message-template-repository";
+import { withOrg } from "@/db/with-org";
 
 /** Narrow an arbitrary string to a known {@link TemplateKey}. */
 function isTemplateKey(value: unknown): value is TemplateKey {
@@ -29,11 +30,13 @@ function isTemplateKey(value: unknown): value is TemplateKey {
 }
 
 export async function GET(): Promise<NextResponse> {
-	const denied = await denyIfUnauthenticated();
-	if (denied) return denied;
+	const auth = await requireOrgSession();
+	if ("denied" in auth) return auth.denied;
 
-	const repo = new DrizzleMessageTemplateRepository();
-	const stored = await repo.getAll();
+	const { organizationId } = auth.org;
+	const stored = await withOrg(organizationId, (tx) =>
+		new DrizzleMessageTemplateRepository(organizationId, tx).getAll(),
+	);
 
 	const templates: TemplateView[] = TEMPLATE_KEYS.map((key) => ({
 		key,
@@ -52,8 +55,8 @@ export async function GET(): Promise<NextResponse> {
 }
 
 export async function PUT(request: NextRequest): Promise<NextResponse> {
-	const denied = await denyIfUnauthenticated();
-	if (denied) return denied;
+	const auth = await requireOrgSession();
+	if ("denied" in auth) return auth.denied;
 
 	const body = (await request.json()) as { key?: unknown; body?: unknown };
 
@@ -70,8 +73,14 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
 		);
 	}
 
-	const repo = new DrizzleMessageTemplateRepository();
-	await repo.upsert(body.key, body.body);
+	const { organizationId } = auth.org;
+	const { key, body: newBody } = { key: body.key, body: body.body };
+	await withOrg(organizationId, (tx) =>
+		new DrizzleMessageTemplateRepository(organizationId, tx).upsert(
+			key,
+			newBody,
+		),
+	);
 
 	const view: TemplateView = {
 		key: body.key,
@@ -85,8 +94,8 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
 }
 
 export async function DELETE(request: NextRequest): Promise<NextResponse> {
-	const denied = await denyIfUnauthenticated();
-	if (denied) return denied;
+	const auth = await requireOrgSession();
+	if ("denied" in auth) return auth.denied;
 
 	const key = request.nextUrl.searchParams.get("key");
 	if (!isTemplateKey(key)) {
@@ -96,8 +105,10 @@ export async function DELETE(request: NextRequest): Promise<NextResponse> {
 		);
 	}
 
-	const repo = new DrizzleMessageTemplateRepository();
-	await repo.reset(key);
+	const { organizationId } = auth.org;
+	await withOrg(organizationId, (tx) =>
+		new DrizzleMessageTemplateRepository(organizationId, tx).reset(key),
+	);
 
 	const view: TemplateView = {
 		key,

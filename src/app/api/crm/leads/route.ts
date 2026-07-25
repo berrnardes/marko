@@ -7,15 +7,19 @@
 
 import { NextResponse } from "next/server";
 
-import { denyIfUnauthenticated } from "@/app/api/crm/_lib/guard";
+import { requireOrgSession } from "@/app/api/crm/_lib/guard";
 import { listLeadSummaries } from "@/db/crm-read";
+import { withOrg } from "@/db/with-org";
 
 export async function GET(): Promise<NextResponse> {
-	const denied = await denyIfUnauthenticated();
-	if (denied) {
-		return denied;
+	const auth = await requireOrgSession();
+	if ("denied" in auth) {
+		return auth.denied;
 	}
 
-	const leads = await listLeadSummaries();
+	const { organizationId } = auth.org;
+	const leads = await withOrg(organizationId, (tx) =>
+		listLeadSummaries(organizationId, tx),
+	);
 	return NextResponse.json({ leads });
 }

@@ -28,25 +28,29 @@ export type GuardDecision = "send" | "skip_and_cancel";
  * outreach (Req 5.2). The single source of truth for the state-based stop
  * condition, mirroring the `lifecycle.ts` style:
  *
- *   - `REPLIED`, `QUALIFYING` — the lead is already engaged and being handled
- *     conversationally, so a stale cadence touch must not be sent.
- *   - `HOT`, `WARM`, `DISQUALIFIED` — the lead has been classified out of the
- *     cadence (handed off or scored), so cadence outreach stops.
+ *   - `REPLIED` — the lead answered and belongs to the consultant now; a stale
+ *     cadence touch landing on top of that conversation is exactly the
+ *     production bug ADR-003 exists to close.
+ *   - `WON`, `LOST` — the consultant recorded an outcome; automation is done
+ *     with this lead.
  *   - `OPTED_OUT` — the terminal opt-out state; no outbound is ever permitted
  *     (Req 5.4, 15.3).
  *
- * The funnel states `COLD_QUEUED`, `IN_CADENCE`, `CADENCE_EXHAUSTED`, and
- * `MONTHLY_NURTURE` are intentionally absent: a touch may legitimately fire
- * while the lead is still progressing through the cadence/nurture flow.
+ * `QUEUED` and `IN_CADENCE` are absent for the obvious reason — that is when
+ * touches are supposed to fire.
+ *
+ * `COMPLETED` is absent for a subtler one: the cadence worker enqueues the T5
+ * breakup message and THEN moves the lead to `COMPLETED`, so by the time the
+ * outbound choke point drains that job the lead is already `COMPLETED`. Listing
+ * it here would drop the fifth touch every single time. Nothing else can fire
+ * afterwards anyway — `COMPLETED` means all five touches are spent.
  *
  * The `satisfies` clause checks each entry is a valid {@link LifecycleState}.
  */
 export const STOP_STATES: ReadonlySet<LifecycleState> = new Set([
 	"REPLIED",
-	"QUALIFYING",
-	"HOT",
-	"WARM",
-	"DISQUALIFIED",
+	"WON",
+	"LOST",
 	"OPTED_OUT",
 ] satisfies readonly LifecycleState[]);
 
@@ -59,8 +63,7 @@ export const STOP_STATES: ReadonlySet<LifecycleState> = new Set([
  * the defined stop conditions holds:
  *
  *   - the lead's lifecycle state is one of the {@link STOP_STATES} —
- *     `REPLIED`, `QUALIFYING`, `HOT`, `WARM`, `DISQUALIFIED`, `OPTED_OUT`
- *     (Req 5.2);
+ *     `REPLIED`, `WON`, `LOST`, `OPTED_OUT` (Req 5.2);
  *   - the lead's block flag is set (Req 5.3, 18.2);
  *   - the lead's opt-in status is `"opt_out"` (Req 4.6, 5.4, 15.3); or
  *   - the lead is marked unreachable — WAHA confirmed the number does not exist

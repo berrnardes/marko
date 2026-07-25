@@ -1,16 +1,20 @@
 // Lifecycle transition table (pure, no I/O).
 //
-// Implements the deterministic `transition` function and the lifecycle
-// transition table per Req 14 and the design's "Lifecycle_Manager (pure
-// transition + persistence wrapper)" and "Lifecycle State Machine" sections.
-// The transition table here is the single source of truth for which lifecycle
-// moves are lawful; the I/O-bound `LifecycleManager` service (a later task)
-// wraps this pure check with persistence, writing only when a transition is
-// `ok`.
+// The executable form of `docs/adr/003-maquina-de-estados-do-lead.md`: seven
+// states, and the exact set of moves between them. This module is the single
+// source of truth for which lifecycle moves are lawful; the I/O-bound
+// `LifecycleManager` wraps `transition` with persistence and writes only when
+// the move is `ok`.
 //
-// The function is total over its declared domain, has no side effects, and
-// performs no I/O. It realizes the design's Property 19 ("Lifecycle
-// transitions are valid exactly when defined, and OPTED_OUT is terminal").
+// Pure and total over its declared domain: no side effects, no I/O. It realizes
+// the design's Property 19 ("lifecycle transitions are valid exactly when
+// defined, and OPTED_OUT is terminal").
+//
+// One thing the table deliberately does NOT express: WHO may take an edge.
+// `WON → REPLIED` is a lawful move, but only a consultant correcting a
+// mis-click may take it — an inbound message must never resurrect a closed
+// lead. That distinction is the second export here, {@link stateAfterReply},
+// which is what the inbound path asks instead of consulting the table directly.
 
 import type { LifecycleState } from "./types";
 
@@ -29,22 +33,10 @@ export type TransitionResult =
 
 /**
  * The terminal lifecycle state. A lead enters `OPTED_OUT` from any other state
- * (Req 14.3) and can never leave it (Req 14.4), so it is both the universal
- * opt-out target and the one state with no outgoing transitions.
+ * (ADR-003 rule 1) and can never leave it, so it is both the universal opt-out
+ * target and the one state with no outgoing transitions.
  */
 const TERMINAL_STATE = "OPTED_OUT" satisfies LifecycleState;
-
-/**
- * The handoff target state. A Lead is moved to `HOT` when it is handed off to a
- * human consultant — and per Req 13.1 this must happen "immediately regardless
- * of the Lead's current funnel stage." So, like {@link TERMINAL_STATE}'s
- * universal opt-out edge, `HOT` is reachable from every non-terminal state via
- * the derived handoff edge in {@link buildTransitionTable} (in addition to the
- * funnel promotions `QUALIFYING → HOT` and `WARM → HOT`). The terminal
- * `OPTED_OUT` state is excluded (it can never leave, Req 14.4), and the
- * self-edge `HOT → HOT` is not added (a no-op self-transition stays rejected).
- */
-const HANDOFF_STATE = "HOT" satisfies LifecycleState;
 
 /**
  * Every lifecycle state, as a runtime array. The string-literal union
@@ -58,15 +50,12 @@ const HANDOFF_STATE = "HOT" satisfies LifecycleState;
  * compile error.
  */
 export const LIFECYCLE_STATES = [
-	"COLD_QUEUED",
+	"QUEUED",
 	"IN_CADENCE",
 	"REPLIED",
-	"QUALIFYING",
-	"HOT",
-	"WARM",
-	"DISQUALIFIED",
-	"CADENCE_EXHAUSTED",
-	"MONTHLY_NURTURE",
+	"COMPLETED",
+	"WON",
+	"LOST",
 	"OPTED_OUT",
 ] as const satisfies readonly LifecycleState[];
 
@@ -81,42 +70,43 @@ const _allStatesCovered: _AllStatesCovered = true;
 void _allStatesCovered;
 
 /**
- * The funnel transitions of the lifecycle (Req 14.2), excluding the universal
- * opt-out edges which are derived in {@link buildTransitionTable}. This is the
- * hand-authored portion of the single source of truth and mirrors the design's
- * state-machine diagram exactly:
+ * The lifecycle edges, excluding the universal opt-out edges derived in
+ * {@link buildTransitionTable}. Hand-authored, and a line-by-line mirror of the
+ * ADR-003 diagram:
  *
- *   - the primary path
- *     `COLD_QUEUED → IN_CADENCE → REPLIED → QUALIFYING → {HOT, WARM, DISQUALIFIED}`,
- *   - the parallel cadence-exhaustion path
- *     `IN_CADENCE → CADENCE_EXHAUSTED → MONTHLY_NURTURE`,
- *   - `MONTHLY_NURTURE → REPLIED` (a nurtured lead that replies re-qualifies,
- *     Req 6.4), and
- *   - `WARM → HOT` (a rising score promotes to hot regardless of stage,
- *     Req 13.1).
+ *   - `QUEUED → IN_CADENCE` — the scheduler enrolls the lead and creates T1–T5.
+ *   - `IN_CADENCE → REPLIED` — an inbound reply; cancels the pending touches
+ *     and alerts the consultant (rule 3).
+ *   - `IN_CADENCE → COMPLETED` — the fifth touch went out with no reply.
+ *   - `COMPLETED → REPLIED` — a LATE reply. This single edge is what makes the
+ *     late-reply case ordinary instead of a special case in the webhook
+ *     (rule 2).
+ *   - `COMPLETED → QUEUED` — the consultant re-enqueues the lead by hand
+ *     (rule 5). No job or import ever takes this edge.
+ *   - `REPLIED → WON` / `REPLIED → LOST` — the consultant records the outcome.
+ *   - `WON → REPLIED` / `LOST → REPLIED` — undoing a mis-clicked outcome
+ *     (rule 4). These are the edges {@link stateAfterReply} exists to keep the
+ *     inbound path away from.
  *
- * States with no funnel-outgoing edge (`HOT`, `DISQUALIFIED`, and the terminal
- * `OPTED_OUT`) are intentionally absent; they gain only the derived opt-out
- * edge (except `OPTED_OUT`, which gains nothing).
+ * `OPTED_OUT` is absent: it is terminal and gains nothing.
  */
-const FUNNEL_TRANSITIONS: {
+const LIFECYCLE_EDGES: {
 	readonly [S in LifecycleState]?: readonly LifecycleState[];
 } = {
-	COLD_QUEUED: ["IN_CADENCE"],
-	IN_CADENCE: ["REPLIED", "CADENCE_EXHAUSTED"],
-	REPLIED: ["QUALIFYING"],
-	QUALIFYING: ["HOT", "WARM", "DISQUALIFIED"],
-	WARM: ["HOT"],
-	CADENCE_EXHAUSTED: ["MONTHLY_NURTURE"],
-	MONTHLY_NURTURE: ["REPLIED"],
+	QUEUED: ["IN_CADENCE"],
+	IN_CADENCE: ["REPLIED", "COMPLETED"],
+	REPLIED: ["WON", "LOST"],
+	COMPLETED: ["REPLIED", "QUEUED"],
+	WON: ["REPLIED"],
+	LOST: ["REPLIED"],
 };
 
 /**
  * Build the complete transition table: every state mapped to the set of states
- * it may transition into. It is assembled from {@link FUNNEL_TRANSITIONS} plus
- * the derived rule that every non-terminal state may transition to
- * `OPTED_OUT` (Req 14.3). The terminal state keeps an empty set, so no
- * transition out of `OPTED_OUT` is ever permitted (Req 14.4).
+ * it may transition into. Assembled from {@link LIFECYCLE_EDGES} plus the
+ * derived rule that every non-terminal state may transition to `OPTED_OUT`
+ * (rule 1). The terminal state keeps an empty set, so no transition out of
+ * `OPTED_OUT` is ever permitted.
  */
 function buildTransitionTable(): ReadonlyMap<
 	LifecycleState,
@@ -127,9 +117,8 @@ function buildTransitionTable(): ReadonlyMap<
 		table.set(state, new Set<LifecycleState>());
 	}
 
-	// Funnel edges (Req 14.2).
 	for (const state of LIFECYCLE_STATES) {
-		const targets = FUNNEL_TRANSITIONS[state];
+		const targets = LIFECYCLE_EDGES[state];
 		if (!targets) continue;
 		const allowed = table.get(state)!;
 		for (const target of targets) {
@@ -137,26 +126,11 @@ function buildTransitionTable(): ReadonlyMap<
 		}
 	}
 
-	// Universal opt-out edge from every non-terminal state (Req 14.3). The
-	// terminal state is skipped, which is what keeps `OPTED_OUT` terminal
-	// (Req 14.4).
+	// Universal opt-out edge from every non-terminal state (rule 1). The terminal
+	// state is skipped, which is what keeps `OPTED_OUT` terminal.
 	for (const state of LIFECYCLE_STATES) {
 		if (state !== TERMINAL_STATE) {
 			table.get(state)!.add(TERMINAL_STATE);
-		}
-	}
-
-	// Universal handoff edge to `HOT` from every non-terminal state (Req 13.1).
-	// Hot-lead handoff transfers the Lead "immediately regardless of the Lead's
-	// current funnel stage", so — unlike the funnel promotions `QUALIFYING → HOT`
-	// and `WARM → HOT` in FUNNEL_TRANSITIONS — `HOT` must be reachable from any
-	// state a Lead can be handed off from (e.g. `REPLIED`, `IN_CADENCE`,
-	// `COLD_QUEUED`, `MONTHLY_NURTURE`). The terminal `OPTED_OUT` is skipped so an
-	// opted-out Lead is never resurrected (Req 14.4), and `HOT` is not given a
-	// self-edge so a redundant `HOT → HOT` stays rejected (Req 14.5).
-	for (const state of LIFECYCLE_STATES) {
-		if (state !== TERMINAL_STATE && state !== HANDOFF_STATE) {
-			table.get(state)!.add(HANDOFF_STATE);
 		}
 	}
 
@@ -165,8 +139,8 @@ function buildTransitionTable(): ReadonlyMap<
 
 /**
  * The lifecycle transition table — the single source of truth for which moves
- * between {@link LifecycleState} values are lawful (Req 14). Maps each state to
- * the immutable set of states it may transition into. Consumed by
+ * between {@link LifecycleState} values are lawful. Maps each state to the
+ * immutable set of states it may transition into. Consumed by
  * {@link transition} and reused by the `LifecycleManager` service.
  */
 export const TRANSITION_TABLE: ReadonlyMap<
@@ -175,18 +149,50 @@ export const TRANSITION_TABLE: ReadonlyMap<
 > = buildTransitionTable();
 
 /**
+ * The states an inbound reply may move a lead OUT of (ADR-003 rule 2).
+ *
+ * Only these two. A lead already in `REPLIED`, `WON`, or `LOST` is with the
+ * consultant: further messages are part of that conversation and must not
+ * change state or re-alert anybody. `QUEUED` is excluded too — a lead that
+ * somehow replies before its first touch has nothing to cancel and no cadence
+ * to interrupt.
+ */
+export const REPLY_SOURCE_STATES: ReadonlySet<LifecycleState> = new Set([
+	"IN_CADENCE",
+	"COMPLETED",
+] satisfies readonly LifecycleState[]);
+
+/**
+ * The state a lead should move to when it sends an inbound reply, or `null`
+ * when the reply must leave the state untouched (ADR-003 rule 2).
+ *
+ * This is the rule the inbound path asks — NOT `transition(from, "REPLIED")`.
+ * The two differ in exactly the case that matters: `WON → REPLIED` and
+ * `LOST → REPLIED` are lawful *manual* corrections, so the table accepts them,
+ * but an incoming WhatsApp message must never reopen a closed lead. Asking here
+ * keeps that decision in one place instead of leaving each caller to remember
+ * it.
+ *
+ * A `null` result is not an error: the message is still recorded in the lead's
+ * history, it simply causes no transition and no consultant alert.
+ *
+ * @param from - The lead's current lifecycle state.
+ * @returns `"REPLIED"` when the reply should transition the lead, else `null`.
+ */
+export function stateAfterReply(from: LifecycleState): LifecycleState | null {
+	return REPLY_SOURCE_STATES.has(from) ? "REPLIED" : null;
+}
+
+/**
  * Validate a requested lifecycle transition against the transition table.
  *
  * Pure and total: it reads {@link TRANSITION_TABLE} and never mutates state.
  * A transition succeeds **if and only if** `(from, to)` is present in the
  * table:
  *
- *   - defined funnel moves succeed (Req 14.2);
- *   - `to === "HOT"` succeeds from every non-terminal state — the universal
- *     handoff edge (Req 13.1), in addition to the funnel promotions
- *     `QUALIFYING → HOT` and `WARM → HOT`;
- *   - `to === "OPTED_OUT"` succeeds from every non-terminal state (Req 14.3);
- *   - every move out of `OPTED_OUT` is rejected — it is terminal (Req 14.4);
+ *   - the defined edges succeed (see {@link LIFECYCLE_EDGES});
+ *   - `to === "OPTED_OUT"` succeeds from every non-terminal state (rule 1);
+ *   - every move out of `OPTED_OUT` is rejected — it is terminal;
  *   - every other pair (including self-transitions and undefined moves) is
  *     rejected, leaving the state unchanged (Req 14.5).
  *

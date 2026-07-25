@@ -9,7 +9,7 @@
 // job, and the compliance/handoff managers cancel a Lead's pending jobs en
 // masse through `cancelAllForLead`.
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, type SQL } from "drizzle-orm";
 
 import { db, type Database } from "@/db/client";
 import { scheduledJobs } from "@/db/schema";
@@ -36,14 +36,25 @@ function toRecord(row: ScheduledJobRow): ScheduledJobRecord {
 }
 
 /**
- * Concrete {@link ScheduledJobRepository} over Drizzle/PostgreSQL. Stateless
- * beyond the injected database client; safe to construct per request.
+ * Concrete {@link ScheduledJobRepository} over Drizzle/PostgreSQL, bound to ONE
+ * organization at construction. Stateless beyond the injected org + database
+ * client; safe to construct per request.
  */
 export class DrizzleScheduledJobRepository implements ScheduledJobRepository {
+	private readonly organizationId: string;
 	private readonly database: Database;
 
-	constructor(database: Database = db) {
+	constructor(organizationId: string, database: Database = db) {
+		this.organizationId = organizationId;
 		this.database = database;
+	}
+
+	/** Narrow `condition` to this repository's organization. */
+	private scoped(condition: SQL): SQL {
+		return and(
+			eq(scheduledJobs.organizationId, this.organizationId),
+			condition,
+		) as SQL;
 	}
 
 	/** @inheritdoc */
@@ -51,6 +62,7 @@ export class DrizzleScheduledJobRepository implements ScheduledJobRepository {
 		const [row] = await this.database
 			.insert(scheduledJobs)
 			.values({
+				organizationId: this.organizationId,
 				leadId: input.leadId,
 				jobKind: input.jobKind,
 				touch: input.touch ?? null,
@@ -68,10 +80,12 @@ export class DrizzleScheduledJobRepository implements ScheduledJobRepository {
 	): Promise<ScheduledJobRecord[]> {
 		const where =
 			status === undefined
-				? eq(scheduledJobs.leadId, leadId)
-				: and(
-						eq(scheduledJobs.leadId, leadId),
-						eq(scheduledJobs.status, status),
+				? this.scoped(eq(scheduledJobs.leadId, leadId))
+				: this.scoped(
+						and(
+							eq(scheduledJobs.leadId, leadId),
+							eq(scheduledJobs.status, status),
+						) as SQL,
 					);
 		const rows = await this.database.select().from(scheduledJobs).where(where);
 		return rows.map(toRecord);
@@ -82,7 +96,7 @@ export class DrizzleScheduledJobRepository implements ScheduledJobRepository {
 		await this.database
 			.update(scheduledJobs)
 			.set({ status })
-			.where(eq(scheduledJobs.id, jobId));
+			.where(this.scoped(eq(scheduledJobs.id, jobId)));
 	}
 
 	/** @inheritdoc */
@@ -94,9 +108,11 @@ export class DrizzleScheduledJobRepository implements ScheduledJobRepository {
 			.update(scheduledJobs)
 			.set({ status: "cancelled" })
 			.where(
-				and(
-					eq(scheduledJobs.leadId, leadId),
-					eq(scheduledJobs.status, "pending"),
+				this.scoped(
+					and(
+						eq(scheduledJobs.leadId, leadId),
+						eq(scheduledJobs.status, "pending"),
+					) as SQL,
 				),
 			)
 			.returning({ id: scheduledJobs.id });

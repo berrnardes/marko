@@ -8,8 +8,19 @@
 // JSON-serializable view DTOs from `@/app/crm/_lib/types`, with timestamps
 // already mapped to ISO-8601 strings so the `/api/crm/*` handlers can return
 // them verbatim.
+//
+// Every function here takes the caller's `organizationId` as its first argument
+// and filters on it. These reads bypass the repositories (they project straight
+// into view DTOs), so the tenant filter has to be written out at each query
+// rather than inherited from a scoped repository — the routes get the value from
+// `requireOrgSession`, never from the request body or query string.
+//
+// The optional `database` argument is how they take part in RLS: routes pass the
+// transaction opened by `withOrg`, so the policies see the tenant context these
+// same statements are filtered by (ADR-004). It defaults to the shared pool for
+// callers that run with a `BYPASSRLS` role.
 
-import { asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 
 import type {
 	HandoffEventView,
@@ -19,7 +30,7 @@ import type {
 	MessageView,
 	QualificationView,
 } from "@/app/crm/_lib/types";
-import { db } from "@/db/client";
+import { db, type Database } from "@/db/client";
 import { handoffEvents, leads, messages } from "@/db/schema";
 
 // ---------------------------------------------------------------------------
@@ -72,8 +83,6 @@ function toLeadDetailView(
 		displayName: row.displayName,
 		lifecycleState: row.lifecycleState,
 		optInStatus: row.optInStatus,
-		score: row.score,
-		classificationBand: row.classificationBand,
 		blocked: row.blocked,
 		qualification: toQualificationView(row),
 		assignedConsultantId: row.assignedConsultantId,
@@ -88,24 +97,26 @@ function toLeadDetailView(
 // ---------------------------------------------------------------------------
 
 /**
- * List every lead as a summary carrying its lifecycle state and score (Req
- * 20.1), most-recently-updated first. Selects only the columns the list view
- * renders rather than full rows.
+ * List the organization's leads as summaries carrying their lifecycle state
+ * (Req 20.1), most-recently-updated first. Selects only the columns the list
+ * view renders rather than full rows.
  */
-export async function listLeadSummaries(): Promise<LeadSummaryView[]> {
-	const rows = await db
+export async function listLeadSummaries(
+	organizationId: string,
+	database: Database = db,
+): Promise<LeadSummaryView[]> {
+	const rows = await database
 		.select({
 			id: leads.id,
 			phoneE164: leads.phoneE164,
 			source: leads.source,
 			displayName: leads.displayName,
 			lifecycleState: leads.lifecycleState,
-			score: leads.score,
-			classificationBand: leads.classificationBand,
 			updatedAt: leads.updatedAt,
 			createdAt: leads.createdAt,
 		})
 		.from(leads)
+		.where(eq(leads.organizationId, organizationId))
 		.orderBy(desc(leads.updatedAt));
 
 	return rows.map((row) => ({
@@ -114,8 +125,6 @@ export async function listLeadSummaries(): Promise<LeadSummaryView[]> {
 		source: row.source,
 		displayName: row.displayName,
 		lifecycleState: row.lifecycleState,
-		score: row.score,
-		classificationBand: row.classificationBand,
 		updatedAt: row.updatedAt.toISOString(),
 		createdAt: row.createdAt.toISOString(),
 	}));
@@ -127,21 +136,33 @@ export async function listLeadSummaries(): Promise<LeadSummaryView[]> {
 
 /**
  * Read a single lead's qualification fields and full message history (Req
- * 20.2). Returns `null` when no lead matches `leadId`. Messages are ordered
+ * 20.2). Returns `null` when no lead matches `leadId` **within
+ * `organizationId`** — so a lead id from another tenant reads as a plain `404`,
+ * indistinguishable from one that does not exist. Messages are ordered
  * chronologically (oldest first) to read as a conversation.
  */
 export async function getLeadDetail(
+	organizationId: string,
 	leadId: string,
+	database: Database = db,
 ): Promise<LeadDetailView | null> {
-	const [row] = await db.select().from(leads).where(eq(leads.id, leadId));
+	const [row] = await database
+		.select()
+		.from(leads)
+		.where(and(eq(leads.organizationId, organizationId), eq(leads.id, leadId)));
 	if (!row) {
 		return null;
 	}
 
-	const leadMessages = await db
+	const leadMessages = await database
 		.select()
 		.from(messages)
-		.where(eq(messages.leadId, leadId))
+		.where(
+			and(
+				eq(messages.organizationId, organizationId),
+				eq(messages.leadId, leadId),
+			),
+		)
 		.orderBy(asc(messages.createdAt));
 
 	return toLeadDetailView(row, leadMessages);
@@ -161,12 +182,16 @@ export async function getLeadDetail(
  * and their messages by id) and grouped in memory, which is appropriate for the
  * internal CRM's scale (a handful of handed-off leads out of ~1,000).
  */
-export async function listHandedOffLeads(): Promise<HandoffLeadView[]> {
-	// All handoff events, newest first, so the first-seen lead id order already
-	// reflects "most recently handed off first".
-	const events = await db
+export async function listHandedOffLeads(
+	organizationId: string,
+	database: Database = db,
+): Promise<HandoffLeadView[]> {
+	// The organization's handoff events, newest first, so the first-seen lead id
+	// order already reflects "most recently handed off first".
+	const events = await database
 		.select()
 		.from(handoffEvents)
+		.where(eq(handoffEvents.organizationId, organizationId))
 		.orderBy(desc(handoffEvents.createdAt));
 
 	if (events.length === 0) {
@@ -188,18 +213,28 @@ export async function listHandedOffLeads(): Promise<HandoffLeadView[]> {
 	}
 
 	// Fetch the handed-off leads and their messages in two set-based reads.
-	const leadRows = await db
+	const leadRows = await database
 		.select()
 		.from(leads)
-		.where(inArray(leads.id, orderedLeadIds));
+		.where(
+			and(
+				eq(leads.organizationId, organizationId),
+				inArray(leads.id, orderedLeadIds),
+			),
+		);
 	const leadById = new Map<string, LeadRow>(
 		leadRows.map((row) => [row.id, row]),
 	);
 
-	const messageRows = await db
+	const messageRows = await database
 		.select()
 		.from(messages)
-		.where(inArray(messages.leadId, orderedLeadIds))
+		.where(
+			and(
+				eq(messages.organizationId, organizationId),
+				inArray(messages.leadId, orderedLeadIds),
+			),
+		)
 		.orderBy(asc(messages.createdAt));
 	const messagesByLead = new Map<string, MessageRow[]>();
 	for (const message of messageRows) {

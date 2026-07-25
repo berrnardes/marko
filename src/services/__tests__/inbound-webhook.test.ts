@@ -5,6 +5,10 @@
 // history + anti-ban gaps: a new echo is recorded as outbound history and
 // counted against the sending number's cap; our own automated send (same
 // `wa_message_id`) dedups to a no-op; and an echo to a non-lead is ignored.
+//
+// Plus the tenancy gate the retrofit added: a delivery whose WAHA session no
+// registered number owns resolves to no organization and is dropped with a
+// `200`, before any repository is touched.
 
 import { createHmac } from "node:crypto";
 
@@ -24,13 +28,11 @@ const LEAD: LeadSnapshot = {
 	phoneE164: "+5547996334573",
 	source: "csv",
 	displayName: null,
-	lifecycleState: "HOT",
+	lifecycleState: "REPLIED",
 	optInStatus: "opt_in",
 	optInAt: null,
-	score: 0,
 	blocked: false,
 	unreachableAt: null,
-	classificationBand: null,
 	qualification: {
 		segment: null,
 		creditValue: null,
@@ -65,28 +67,59 @@ function echoBody(overrides: Record<string, unknown> = {}): string {
 	});
 }
 
-function buildDeps(over: Partial<WahaWebhookDeps> = {}): {
+/**
+ * Build the webhook dependencies around an in-memory tenant scope.
+ *
+ * In production `resolveSession` maps the WAHA session to the organization that
+ * registered it, and `withScope` opens the RLS transaction that the tenant's
+ * repositories run in. Here both are fakes: pass `null` to exercise the
+ * unknown-session path, or override individual repositories.
+ *
+ * `withScope` also records whether it was entered, which is how the tests
+ * assert that nothing is read or written before a tenant is known.
+ */
+function buildDeps(scopeOver: Record<string, unknown> | null = {}): {
 	deps: WahaWebhookDeps;
 	append: ReturnType<typeof vi.fn>;
 	recordSend: ReturnType<typeof vi.fn>;
 	findByWaMessageId: ReturnType<typeof vi.fn>;
+	resolveSession: ReturnType<typeof vi.fn>;
+	withScope: ReturnType<typeof vi.fn>;
 } {
 	const append = vi.fn(async () => ({ id: "msg-1" }) as MessageRecord);
 	const recordSend = vi.fn(async () => 1);
 	const findByWaMessageId = vi.fn(async () => null as MessageRecord | null);
-	const deps = {
-		secret: SECRET,
+	const owner =
+		scopeOver === null
+			? null
+			: { organizationId: "org-1", numberId: "num-1" };
+	const scope = {
 		leads: {
 			findByPhone: vi.fn(async () => LEAD),
 			create: vi.fn(async () => LEAD),
 		},
 		messages: { append, findByWaMessageId },
-		queue: { enqueueInbound: vi.fn(async () => "job-1") },
 		antiBan: { recordSend },
-		resolveNumberId: vi.fn(async () => "num-1"),
-		...over,
+		...(scopeOver ?? {}),
+	};
+	const resolveSession = vi.fn(async () => owner);
+	const withScope = vi.fn(
+		async (_owner: unknown, fn: (s: unknown) => Promise<unknown>) => fn(scope),
+	);
+	const deps = {
+		secret: SECRET,
+		resolveSession,
+		withScope,
+		queue: () => ({ enqueueInbound: vi.fn(async () => "job-1") }),
 	} as unknown as WahaWebhookDeps;
-	return { deps, append, recordSend, findByWaMessageId };
+	return {
+		deps,
+		append,
+		recordSend,
+		findByWaMessageId,
+		resolveSession,
+		withScope,
+	};
 }
 
 describe("webhook outbound-echo ingestion", () => {
@@ -134,7 +167,7 @@ describe("webhook outbound-echo ingestion", () => {
 				findByPhone: vi.fn(async () => null),
 				create: vi.fn(async () => LEAD),
 			},
-		} as unknown as Partial<WahaWebhookDeps>);
+		});
 		const body = echoBody();
 
 		const result = await processWahaWebhook(deps, body, sign(body));
@@ -142,5 +175,95 @@ describe("webhook outbound-echo ingestion", () => {
 		expect(result.body.status).toBe("ignored");
 		expect(append).not.toHaveBeenCalled();
 		expect(recordSend).not.toHaveBeenCalled();
+	});
+});
+
+describe("webhook tenant resolution", () => {
+	it("drops a delivery whose session no organization owns, before any read", async () => {
+		const { deps, append, recordSend, findByWaMessageId, resolveSession, withScope } =
+			buildDeps(null);
+		const body = echoBody();
+
+		const result = await processWahaWebhook(deps, body, sign(body));
+
+		// Acknowledged, not 5xx: WAHA retries on error, and an unowned session
+		// would be redelivered forever.
+		expect(result.status).toBe(200);
+		expect(result.body.status).toBe("ignored");
+		expect(result.body.reason).toBe("unknown_session");
+		expect(resolveSession).toHaveBeenCalledWith("default");
+		// No tenant, so no scoped unit of work was ever entered — nothing was
+		// read and nothing was written.
+		expect(withScope).not.toHaveBeenCalled();
+		expect(findByWaMessageId).not.toHaveBeenCalled();
+		expect(append).not.toHaveBeenCalled();
+		expect(recordSend).not.toHaveBeenCalled();
+	});
+
+	it("resolves the tenant before opening the scoped unit of work", async () => {
+		const { deps, resolveSession, withScope } = buildDeps();
+		const inbound = JSON.stringify({
+			event: "message",
+			session: "org-b-session",
+			payload: {
+				id: "wamid-in-1",
+				from: "5547996334573@c.us",
+				body: "oi",
+				timestamp: 1_782_245_765,
+			},
+		});
+
+		const result = await processWahaWebhook(deps, inbound, sign(inbound));
+
+		expect(result.body.status).toBe("accepted");
+		expect(resolveSession).toHaveBeenCalledWith("org-b-session");
+		// The persistence work ran as the resolved tenant.
+		expect(withScope).toHaveBeenCalledWith(
+			{ organizationId: "org-1", numberId: "num-1" },
+			expect.any(Function),
+		);
+	});
+
+	it("resolves a @lid sender BEFORE entering the transaction", async () => {
+		// The `@lid` lookup is a WAHA HTTP round trip. Under RLS the scoped unit
+		// of work holds a pooled PgBouncer connection, so the resolution must
+		// happen outside it — this pins that ordering.
+		const { deps, withScope } = buildDeps();
+		const calls: string[] = [];
+		(deps as { lids?: unknown }).lids = {
+			resolveLidToPhone: async () => {
+				calls.push("lid");
+				return "5547996334573@c.us";
+			},
+		};
+		(deps as { withScope: unknown }).withScope = async (
+			_owner: unknown,
+			fn: (s: unknown) => Promise<unknown>,
+		) => {
+			calls.push("scope");
+			return fn({
+				leads: { findByPhone: async () => LEAD, create: async () => LEAD },
+				messages: {
+					append: async () => ({ id: "msg-1" }) as MessageRecord,
+					findByWaMessageId: async () => null,
+				},
+			});
+		};
+		const inbound = JSON.stringify({
+			event: "message",
+			session: "default",
+			payload: {
+				id: "wamid-lid-1",
+				from: "96817169588265@lid",
+				body: "oi",
+				timestamp: 1_782_245_765,
+			},
+		});
+
+		const result = await processWahaWebhook(deps, inbound, sign(inbound));
+
+		expect(result.body.status).toBe("accepted");
+		expect(calls).toEqual(["lid", "scope"]);
+		expect(withScope).not.toHaveBeenCalled(); // replaced above
 	});
 });

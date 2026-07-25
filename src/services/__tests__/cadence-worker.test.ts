@@ -4,17 +4,14 @@
 // fresh-state re-read (Req 5.1), skip-and-cancel on every stop condition
 // (Req 5.2–5.4), the send path that renders a touch and enqueues it onto the
 // outbound choke point (Req 4.1–4.5), and the T5 special case that exhausts the
-// cadence and triggers monthly nurture (Req 4.6, 6.1, 6.2). The named property
+// cadence (Req 4.6, 6.1). The named property
 // test for enrollment/cancellable touches (Property 4) is the separate task
 // 16.2 and is not implemented here.
 
 import { renderTouch } from "@/core/messages";
 import type { LeadSnapshot } from "@/core/types";
 import type { CadenceScheduler } from "@/services/cadence-scheduler";
-import {
-	createCadenceWorker,
-	type NurtureTrigger,
-} from "@/services/cadence-worker";
+import { createCadenceWorker } from "@/services/cadence-worker";
 import {
 	UnknownLeadError,
 	type LifecycleManager,
@@ -42,10 +39,8 @@ function makeLead(overrides: Partial<LeadSnapshot> = {}): LeadSnapshot {
 		lifecycleState: "IN_CADENCE",
 		optInStatus: "opt_in",
 		optInAt: null,
-		score: 0,
 		blocked: false,
 		unreachableAt: null,
-		classificationBand: null,
 		qualification: {
 			segment: "imóvel",
 			creditValue: 200000,
@@ -105,11 +100,6 @@ function lifecycleApplying(ok = true): LifecycleManager {
 	} as unknown as LifecycleManager;
 }
 
-/** Build a `NurtureTrigger` recording its `startMonthly` calls. */
-function nurtureTrigger(): NurtureTrigger {
-	return { startMonthly: vi.fn(async () => undefined) };
-}
-
 /**
  * Build a `ScheduledJobRepository` exposing one pending `cadence` mirror row per
  * touch in `touches`, and recording `updateStatus` calls so tests can assert the
@@ -150,14 +140,12 @@ describe("CadenceWorker.process", () => {
 	let cadence: CadenceScheduler;
 	let outbound: OutboundSendQueue;
 	let lifecycle: LifecycleManager;
-	let nurture: NurtureTrigger;
 
 	beforeEach(() => {
 		leads = leadRepoReturning(makeLead());
 		cadence = schedulerCancelling();
 		outbound = outboundQueue();
 		lifecycle = lifecycleApplying();
-		nurture = nurtureTrigger();
 	});
 
 	function makeWorker(lead: LeadSnapshot | null = makeLead()) {
@@ -167,7 +155,6 @@ describe("CadenceWorker.process", () => {
 			cadence,
 			outbound,
 			lifecycle,
-			nurture,
 		});
 	}
 
@@ -193,9 +180,8 @@ describe("CadenceWorker.process", () => {
 			}),
 			kind: "cadence",
 		});
-		// No lifecycle change or nurture for a non-T5 touch.
+		// No lifecycle change for a non-T5 touch.
 		expect(lifecycle.apply).not.toHaveBeenCalled();
-		expect(nurture.startMonthly).not.toHaveBeenCalled();
 		expect(outcome).toEqual({
 			status: "sent",
 			leadId: "lead-1",
@@ -204,14 +190,7 @@ describe("CadenceWorker.process", () => {
 		});
 	});
 
-	it.each<LeadSnapshot["lifecycleState"]>([
-		"REPLIED",
-		"QUALIFYING",
-		"HOT",
-		"WARM",
-		"DISQUALIFIED",
-		"OPTED_OUT",
-	])(
+	it.each<LeadSnapshot["lifecycleState"]>(["REPLIED", "WON", "LOST", "OPTED_OUT"])(
 		"skips the touch and cancels remaining jobs when the lead is %s (Req 5.2)",
 		async (lifecycleState) => {
 			const worker = makeWorker(makeLead({ lifecycleState }));
@@ -249,32 +228,33 @@ describe("CadenceWorker.process", () => {
 		expect(outcome.status).toBe("skipped");
 	});
 
-	it("on T5 for a non-replying lead, enqueues the breakup then exhausts and nurtures (Req 4.6, 6.1, 6.2)", async () => {
+	it("on T5 for a non-replying lead, enqueues the breakup then completes the cadence (Req 4.6, 6.1)", async () => {
 		const worker = makeWorker(makeLead());
 
 		const outcome = await worker.process({ leadId: "lead-1", touch: "T5" });
 
-		// The breakup send is enqueued (Req 4.6).
+		// The breakup send is enqueued (Req 4.6) BEFORE the state moves — which is
+		// exactly why `COMPLETED` must not be a send-guard stop state, or the
+		// outbound choke point would drop this very job (see send-guard.test.ts).
 		expect(outbound.enqueueSend).toHaveBeenCalledTimes(1);
-		// Then the lead is exhausted (Req 6.1) and nurture is triggered (Req 6.2).
-		expect(lifecycle.apply).toHaveBeenCalledWith("lead-1", "CADENCE_EXHAUSTED");
-		expect(nurture.startMonthly).toHaveBeenCalledWith("lead-1");
+		// Then the lead settles in `COMPLETED` (ADR-003). Not terminal: a late
+		// reply still moves it to `REPLIED`.
+		expect(lifecycle.apply).toHaveBeenCalledWith("lead-1", "COMPLETED");
 		expect(outcome).toEqual({
-			status: "exhausted",
+			status: "completed",
 			leadId: "lead-1",
 			touch: "T5",
 			jobId: "send-job-1",
 		});
 	});
 
-	it("does not trigger nurture when the CADENCE_EXHAUSTED transition is rejected", async () => {
+	it("reports `sent` when the COMPLETED transition is rejected", async () => {
 		lifecycle = lifecycleApplying(false);
 		const worker = makeWorker(makeLead());
 
 		const outcome = await worker.process({ leadId: "lead-1", touch: "T5" });
 
 		expect(outbound.enqueueSend).toHaveBeenCalledTimes(1);
-		expect(nurture.startMonthly).not.toHaveBeenCalled();
 		expect(outcome).toEqual({
 			status: "sent",
 			leadId: "lead-1",
@@ -298,7 +278,6 @@ describe("CadenceWorker.process", () => {
 			cadence,
 			outbound,
 			lifecycle,
-			nurture,
 			scheduledJobs: repo,
 		});
 
@@ -316,7 +295,6 @@ describe("CadenceWorker.process", () => {
 			cadence,
 			outbound,
 			lifecycle,
-			nurture,
 			scheduledJobs: repo,
 		});
 
