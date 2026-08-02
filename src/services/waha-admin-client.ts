@@ -130,7 +130,12 @@ export class HttpWahaAdminClient {
 	/**
 	 * Fetch the scan QR as a `data:` URL for `<img>`. Requests JSON so WAHA
 	 * returns a base64 payload rather than raw PNG bytes. Returns null when the
-	 * session is not currently presenting a QR (e.g. already WORKING).
+	 * session is simply not presenting a QR right now (e.g. already WORKING, or
+	 * the state moved on between the status read and this call).
+	 *
+	 * Anything else — auth rejected, WAHA erroring, gateway down — throws. Those
+	 * are real failures, and swallowing them as "no QR yet" would leave the
+	 * connect UI waiting on a QR that is never coming.
 	 */
 	async getQrDataUrl(name: string): Promise<string | null> {
 		const path = `/api/${encodeURIComponent(name)}/auth/qr`;
@@ -138,9 +143,12 @@ export class HttpWahaAdminClient {
 			method: "GET",
 			headers: this.headers(),
 		});
-		if (!res.ok) {
-			// No QR available (e.g. session already authenticated) is not an error.
+		if (res.status === 404 || res.status === 422) {
+			// Unknown session / wrong state for a QR — expected, not an error.
 			return null;
+		}
+		if (!res.ok) {
+			throw await this.toError("GET", path, res);
 		}
 		const payload = (await res.json()) as {
 			mimetype?: string;

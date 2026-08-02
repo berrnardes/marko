@@ -16,6 +16,9 @@
 # internet além do necessário.
 #
 # Suba com:  docker compose --env-file .env.production up -d --build
+#
+# Para DESENVOLVIMENTO local não use este arquivo: veja `docker-compose.dev.yml`
+# (Postgres + WAHA no Docker, app e worker no host).
 
 services:
   # Banco de dados da aplicação (leads, mensagens, Better Auth, fila pg-boss).
@@ -138,6 +141,17 @@ services:
       # rejeita a sua com 401. Mantemos WHATSAPP_API_KEY por retrocompat.
       - WAHA_API_KEY=${WAHA_API_KEY}
       - WHATSAPP_API_KEY=${WAHA_API_KEY}
+      # Engine do WhatsApp. O default do WAHA é WEBJS, que sobe um Chromium
+      # (Puppeteer) POR SESSÃO: ~500MB de RAM cada e dezenas de segundos — às
+      # vezes minutos — presa em STARTING antes de emitir o QR code. Como este
+      # CRM mantém VÁRIOS números em warm-up ao mesmo tempo, isso não escala no
+      # Hetzner. GOWS é browserless (Go/whatsmeow, sucessor declarado do NOWEB),
+      # chega a SCAN_QR_CODE em segundos e suporta tudo que usamos: sendText,
+      # sendSeen, presence, contacts/check-exists e os endpoints de LID. A única
+      # coisa que perde é screenshot, que o app não usa.
+      # ATENÇÃO: o engine é gravado na sessão no momento da criação — trocar
+      # aqui vale para sessões NOVAS; as já pareadas seguem no engine antigo.
+      - WHATSAPP_DEFAULT_ENGINE=${WAHA_ENGINE:-GOWS}
       # Para onde o WAHA entrega os eventos inbound: o webhook do app na Vercel.
       - WHATSAPP_HOOK_URL=${WAHA_WEBHOOK_URL}
       - WHATSAPP_HOOK_EVENTS=message

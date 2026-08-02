@@ -2,11 +2,13 @@
 //
 // These exercise the pure `msisdnFromMe` helper and the transport parsing of
 // `HttpWahaAdminClient` against an injected fake `fetch`: status/`me` reading,
-// QR base64 → data URL conversion, and the "no QR available" path. Network
-// shape follows the WAHA REST API used by the CRM connect flow.
+// QR base64 → data URL conversion, and the split between "no QR available" and
+// a genuine WAHA failure. Network shape follows the WAHA REST API used by the
+// CRM connect flow.
 
 import { describe, expect, it, vi } from "vitest";
 
+import { WahaError } from "@/services/waha-client";
 import {
 	HttpWahaAdminClient,
 	msisdnFromMe,
@@ -68,7 +70,14 @@ describe("HttpWahaAdminClient.getQrDataUrl", () => {
 	});
 
 	it("returns null when no QR is available", async () => {
-		const client = clientReturning({}, 404);
-		expect(await client.getQrDataUrl("wa-123")).toBeNull();
+		expect(await clientReturning({}, 404).getQrDataUrl("wa-123")).toBeNull();
+		expect(await clientReturning({}, 422).getQrDataUrl("wa-123")).toBeNull();
+	});
+
+	// A broken gateway must not read as "the QR just isn't ready yet" — that is
+	// what left the connect panel waiting forever on a QR that never comes.
+	it("throws when WAHA itself fails", async () => {
+		const client = clientReturning({ error: "boom" }, 500);
+		await expect(client.getQrDataUrl("wa-123")).rejects.toThrow(WahaError);
 	});
 });

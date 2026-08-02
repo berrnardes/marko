@@ -1,0 +1,201 @@
+# Stack de DESENVOLVIMENTO local: Postgres + WAHA (+ worker opcional).
+#
+# É o espelho enxuto do `docker-compose.yml` (produção/Hetzner). A diferença de
+# fundo é o que roda dentro e fora do Docker:
+#
+#   produção:  app na Vercel  │ postgres + pgbouncer + waha + worker + caddy + backup
+#   dev:       app no host    │ postgres + waha  (worker no host OU no container)
+#
+# O que NÃO existe aqui, de propósito:
+#   - pgbouncer → em dev o app fala direto com o Postgres; não há função
+#     serverless abrindo/fechando centenas de conexões para justificar o pooler
+#     (e o certificado TLS autoassinado de `certs/` só existe no servidor).
+#   - caddy     → nada precisa de TLS público; o WAHA publica a 3000 no host.
+#   - db-backup → não se faz backup noturno de um banco descartável.
+#
+# `name:` isola este stack do de produção (containers e volumes ficam com o
+# prefixo `marko-dev_`), então `down -v` aqui nunca toca em volume de produção.
+#
+# ---------------------------------------------------------------------------
+# Uso
+# ---------------------------------------------------------------------------
+#   1. cp .env.development.example .env.development
+#      (revise os valores; os defaults abaixo já funcionam sem ele)
+#   2. docker compose -f docker-compose.dev.yml up -d
+#   3. npm run db:migrate          # cria o schema no banco do container
+#   4. npm run db:seed-admin       # primeiro usuário (ADMIN_* no .env)
+#   5. npm run dev                 # app Next.js no host, porta 3001
+#      npm run worker:dev          # worker no host (hot reload via tsx watch)
+#
+# Para rodar o worker DENTRO do compose em vez do host (parity com produção,
+# também com hot reload):
+#   docker compose -f docker-compose.dev.yml --profile worker up -d
+#
+# Derrubar tudo e zerar o banco:
+#   docker compose -f docker-compose.dev.yml down -v
+#
+# ---------------------------------------------------------------------------
+# Variáveis
+# ---------------------------------------------------------------------------
+# Todo `${VAR:-default}` abaixo tem default utilizável, então o stack sobe sem
+# nenhum arquivo de env. Para sobrescrever, o Compose interpola a partir do
+# `.env` do diretório — ou passe explicitamente:
+#   docker compose -f docker-compose.dev.yml --env-file .env.development up -d
+#
+# ATENÇÃO à senha: o `DATABASE_URL` do seu `.env` (usado por `npm run dev`,
+# `npm run worker:dev` e pelo drizzle-kit) precisa casar com POSTGRES_USER /
+# POSTGRES_PASSWORD / POSTGRES_DB daqui. Ver .env.development.example.
+
+name: marko-dev
+
+services:
+  # Banco de dados de desenvolvimento. Ao contrário de produção, PUBLICA a porta
+  # no host: o app e o worker rodam fora do Docker e precisam alcançá-lo, e o
+  # drizzle-kit (`npm run db:migrate`) também.
+  #
+  # Se você já tem um Postgres nativo ocupando a 5432, suba noutra porta:
+  #   POSTGRES_PORT=5433 docker compose -f docker-compose.dev.yml up -d
+  # (e ajuste a porta no DATABASE_URL do .env).
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-marko}
+      # Mesmo fuso de produção: mantém `now()` e os logs do psql coerentes com o
+      # que você vê no app. O armazenamento de `timestamptz` é UTC de todo jeito.
+      - TZ=America/Sao_Paulo
+      - PGTZ=America/Sao_Paulo
+    volumes:
+      - pg-data-dev:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-marko}",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - marko-dev
+
+  # Gateway de WhatsApp. Em dev a porta 3000 é publicada no host para você abrir
+  # o dashboard (http://localhost:3000/dashboard) e ler o QR code.
+  #
+  # O WAHA roda em container e o app roda no HOST, então o webhook inbound tem
+  # que sair do container de volta para a máquina: é o que `host.docker.internal`
+  # (mapeado via `host-gateway`) resolve — no Linux esse nome não existe sem o
+  # extra_hosts abaixo.
+  waha:
+    image: devlikeapro/waha:latest
+    restart: unless-stopped
+    ports:
+      - "${WAHA_PORT:-3000}:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # Chave de API. Precisa ser a MESMA no WAHA_API_KEY do .env (app/worker):
+      # se não for definida, o WAHA sorteia uma no boot e responde 401.
+      - WAHA_API_KEY=${WAHA_API_KEY:-dev-waha-key}
+      - WHATSAPP_API_KEY=${WAHA_API_KEY:-dev-waha-key}
+      # Engine do WhatsApp — mesmo valor de produção, de propósito. O default do
+      # WAHA (WEBJS) sobe um Chromium por sessão e fica dezenas de segundos, às
+      # vezes minutos, em STARTING antes de emitir o QR: na tela "Conectar novo
+      # número" isso parece um bug. GOWS é browserless e chega a SCAN_QR_CODE em
+      # segundos. Ver o comentário longo no docker-compose.yml.
+      - WHATSAPP_DEFAULT_ENGINE=${WAHA_ENGINE:-GOWS}
+      # Entrega os eventos inbound no app rodando no host (next dev, porta 3001).
+      - WHATSAPP_HOOK_URL=${WAHA_WEBHOOK_URL:-http://host.docker.internal:3001/api/waha/webhook}
+      - WHATSAPP_HOOK_EVENTS=message
+      # Assinatura HMAC SHA-512 do corpo cru no header `X-Webhook-Hmac`. A rota
+      # `/api/waha/webhook` EXIGE a assinatura (401 sem ela, 500 se o segredo não
+      # estiver setado no app), então o segredo tem que ser idêntico nos dois
+      # lados: aqui e no WAHA_WEBHOOK_HMAC_SECRET do .env.
+      - WHATSAPP_HOOK_HMAC_KEY=${WAHA_WEBHOOK_HMAC_SECRET:-dev-hmac-secret}
+      # Credenciais fixas do dashboard e do swagger (HTTP Basic). Sem elas o WAHA
+      # gera senhas aleatórias a cada restart e você perde o acesso ao QR code.
+      - WAHA_DASHBOARD_USERNAME=${WAHA_DASHBOARD_USERNAME:-admin}
+      - WAHA_DASHBOARD_PASSWORD=${WAHA_DASHBOARD_PASSWORD:-admin}
+      - WHATSAPP_SWAGGER_USERNAME=${WHATSAPP_SWAGGER_USERNAME:-admin}
+      - WHATSAPP_SWAGGER_PASSWORD=${WHATSAPP_SWAGGER_PASSWORD:-admin}
+    volumes:
+      # Persiste a sessão autenticada entre restarts — sem isso você reescaneia o
+      # QR code toda vez que o container sobe.
+      - waha-sessions-dev:/app/.sessions
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - marko-dev
+
+  # Worker OPCIONAL (profile `worker`): mesma coisa que `npm run worker:dev` no
+  # host, só dentro da rede Docker. Use quando quiser reproduzir a topologia de
+  # produção (worker falando com `postgres:5432` e `waha:3000` por hostname
+  # interno); no dia a dia, rodar no host é mais rápido de depurar.
+  #
+  # Reaproveita o Dockerfile.worker (imagem de produção), mas troca o comando por
+  # `tsx watch` e bind-monta o código: as deps vêm do `npm ci` da imagem — nada
+  # de instalar pacote em tempo de subida — e só o código-fonte vem do host, então
+  # cada save reinicia o processo. O node_modules do host NÃO é montado (ele foi
+  # instalado com outro Node e ficaria por cima do da imagem).
+  #
+  # Ao mexer em package.json/package-lock.json, rebuild:
+  #   docker compose -f docker-compose.dev.yml --profile worker up -d --build
+  worker:
+    profiles: ["worker"]
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    restart: unless-stopped
+    # `tsx watch` direto, e não `npm run worker:dev`: aquele script carrega
+    # `--env-file=.env`, cujo DATABASE_URL aponta para `localhost` — que, de
+    # dentro do container, é o próprio container.
+    command: ["npx", "tsx", "watch", "src/worker/index.ts"]
+    environment:
+      # Rede interna do Docker: banco direto (o pg-boss exige afinidade de
+      # sessão) e WAHA pelo hostname do serviço.
+      - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-marko}
+      - WAHA_BASE_URL=http://waha:3000
+      - WAHA_API_KEY=${WAHA_API_KEY:-dev-waha-key}
+      - SVC=worker
+      # Sobrescreve o NODE_ENV=production embutido no Dockerfile.worker:
+      # `development` mantém o pino-pretty ligado (logs legíveis no `logs -f`).
+      - NODE_ENV=development
+      - LOG_LEVEL=${LOG_LEVEL:-debug}
+      # Mesmo motivo de produção: janela de envio 9h–20h, virada do contador
+      # diário anti-ban e contagem de warm-up usam o fuso LOCAL do processo.
+      - TZ=America/Sao_Paulo
+      # Cadência em segundos com 3 toques, em vez de 5 toques / 15 dias. Ligue
+      # (=1) só quando estiver testando o fluxo ponta a ponta.
+      - CADENCE_TEST_MODE=${CADENCE_TEST_MODE:-0}
+      - CONSULTANT_NOTIFY_NUMBERS=${CONSULTANT_NOTIFY_NUMBERS:-}
+      - CONSULTANT_NOTIFY_FROM_NUMBER=${CONSULTANT_NOTIFY_FROM_NUMBER:-}
+      - CRM_BASE_URL=${CRM_BASE_URL:-http://localhost:3001}
+    volumes:
+      # Só o que o worker lê em runtime (o tsconfig é de onde o tsx tira o alias
+      # `@/*`). Read-only: o processo nunca escreve no código.
+      - ./src:/app/src:ro
+      - ./tsconfig.json:/app/tsconfig.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      waha:
+        condition: service_started
+    networks:
+      - marko-dev
+
+volumes:
+  # Sufixo `-dev` + `name: marko-dev` no topo: impossível confundir com os
+  # volumes de produção.
+  pg-data-dev:
+  waha-sessions-dev:
+
+networks:
+  marko-dev:
+    driver: bridge

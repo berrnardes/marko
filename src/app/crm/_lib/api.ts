@@ -327,8 +327,12 @@ export function useCreateSession(): UseMutationResult<
 
 /**
  * Poll a session's status + QR while the connect panel is open. Polls every 2s
- * until the session is WORKING or FAILED (then stops). Disabled when
- * `sessionName` is null (no session in progress).
+ * until the session reaches a terminal state (WORKING, FAILED or STOPPED), then
+ * stops. Disabled when `sessionName` is null (no session in progress).
+ *
+ * Polling deliberately continues while the query is in error: a WAHA blip or a
+ * restarted gateway should heal on its own, and the caller renders the error
+ * meanwhile instead of pretending the session is still starting.
  */
 export function useSessionStatus(
 	sessionName: string | null,
@@ -338,7 +342,9 @@ export function useSessionStatus(
 		enabled: sessionName !== null,
 		refetchInterval: (query) => {
 			const status = query.state.data?.status;
-			return status === "WORKING" || status === "FAILED" ? false : 2000;
+			return status === "WORKING" || status === "FAILED" || status === "STOPPED"
+				? false
+				: 2000;
 		},
 		queryFn: async () =>
 			getJson<SessionStatusView>(
@@ -381,16 +387,18 @@ export function useConfirmSession(): UseMutationResult<
 	});
 }
 
-/** Tear down a pending (unconfirmed) session when the connect panel is closed. */
-export function useCancelSession(): UseMutationResult<void, Error, string> {
-	return useMutation({
-		mutationFn: async (sessionName: string) => {
-			await fetch(
-				`/api/crm/numbers/sessions/${encodeURIComponent(sessionName)}`,
-				{ method: "DELETE", credentials: "same-origin" },
-			);
-		},
-	});
+/**
+ * Tear down a pending (unconfirmed) session. A plain function rather than a
+ * mutation hook because the connect panel calls it from an effect *cleanup*,
+ * where the component is already going away and a hook's lifecycle is no longer
+ * available. Best-effort: the endpoint always answers ok, and a failed teardown
+ * must never block closing the panel.
+ */
+export async function deleteSession(sessionName: string): Promise<void> {
+	await fetch(`/api/crm/numbers/sessions/${encodeURIComponent(sessionName)}`, {
+		method: "DELETE",
+		credentials: "same-origin",
+	}).catch(() => undefined);
 }
 
 /** Delete a WhatsApp number. */
