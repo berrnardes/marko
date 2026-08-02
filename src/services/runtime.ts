@@ -582,21 +582,24 @@ export async function registerWorkers(rt: Runtime): Promise<void> {
 		},
 	);
 
-	await rt.boss.work<OutboundSendPayload>(QUEUE_NAMES.outbound, async (jobs) => {
-		for (const job of jobs) {
-			const organizationId = await resolveJobOrganization(
-				job.data,
-				QUEUE_NAMES.outbound,
-			);
-			if (!organizationId) {
-				continue;
+	await rt.boss.work<OutboundSendPayload>(
+		QUEUE_NAMES.outbound,
+		async (jobs) => {
+			for (const job of jobs) {
+				const organizationId = await resolveJobOrganization(
+					job.data,
+					QUEUE_NAMES.outbound,
+				);
+				if (!organizationId) {
+					continue;
+				}
+				await processOutboundRequest(rt, rt.forOrg(organizationId), {
+					...job.data,
+					organizationId,
+				});
 			}
-			await processOutboundRequest(rt, rt.forOrg(organizationId), {
-				...job.data,
-				organizationId,
-			});
-		}
-	});
+		},
+	);
 
 	// Inbound processing: the webhook persists + enqueues each inbound message;
 	// this is the consumer that runs the Inbound_Handler pipeline (sendSeen,
