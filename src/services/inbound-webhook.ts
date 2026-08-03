@@ -12,7 +12,9 @@
 //      keyed by the configured shared secret) with a timing-safe comparison;
 //      reject an invalid/missing signature with `401` and process nothing.
 //   2. Validate the untrusted body against {@link WahaMessageWebhookSchema};
-//      reject a malformed body with `400`.
+//      acknowledge a malformed body with `200 "ignored"` and a warn log — it is
+//      permanently un-processable, and a `4xx` would only make WAHA retry it 15
+//      times and then discard it (ADR-005).
 //   3. Enforce idempotency by `wa_message_id`: WAHA retries deliveries, so a
 //      message whose id was already persisted is acknowledged with a fast `2xx`
 //      and NOT re-processed (no double persist, no double enqueue).
@@ -74,9 +76,9 @@ const HANDLED_EVENTS = ["message", "message.any"] as const;
  * The subset of WAHA's `message` webhook payload this route consumes. WAHA
  * sends many more fields per message; the schema is permissive
  * (`z.looseObject`, extra fields preserved) but REQUIRES the fields we read so
- * a malformed delivery missing them is rejected with `400` (Req 7.1). The
- * sender id (`from`) and message id (`id`) are non-empty; `timestamp` is the
- * WAHA epoch-seconds receipt time.
+ * a malformed delivery missing them is dropped with a logged `200 "ignored"`
+ * (Req 7.1, ADR-005). The sender id (`from`) and message id (`id`) are
+ * non-empty; `timestamp` is the WAHA epoch-seconds receipt time.
  */
 export const WahaMessagePayloadSchema = z.looseObject({
 	/** WAHA message id — the at-least-once idempotency key (`wa_message_id`). */
@@ -87,10 +89,26 @@ export const WahaMessagePayloadSchema = z.looseObject({
 	 * Raw WhatsApp recipient id. For an outbound echo (`fromMe: true`) `from` is
 	 * our own number and the Lead is the recipient here, so it is the attribution
 	 * key for ingesting the consultant's WhatsApp Web replies.
+	 *
+	 * `nullish`, not `optional`: the GOWS engine sends `"to": null` on every
+	 * INBOUND message (it only carries a recipient for a `fromMe` echo). Zod's
+	 * `.optional()` accepts `undefined` but rejects a present `null`, so declaring
+	 * this `.optional()` alone rejected every real inbound delivery. Normalized to
+	 * `undefined` here so the `if (!recipient)` guard downstream is unchanged.
 	 */
-	to: z.string().optional(),
-	/** The inbound message text (may be empty for media-only messages). */
-	body: z.string().default(""),
+	to: z
+		.string()
+		.nullish()
+		.transform((value) => value ?? undefined),
+	/**
+	 * The inbound message text. `nullish` for the same reason as `to`: GOWS sends
+	 * `"body": null` for a media-only message, and `.default("")` fills only an
+	 * ABSENT key, never a present `null`. Normalized to the empty string.
+	 */
+	body: z
+		.string()
+		.nullish()
+		.transform((value) => value ?? ""),
 	/** Receipt time as WAHA epoch SECONDS. */
 	timestamp: z.number(),
 	/** Whether the message was sent by the session itself (outbound echo). */
@@ -101,8 +119,8 @@ export const WahaMessagePayloadSchema = z.looseObject({
  * The WAHA webhook envelope — the outer shape common to every event WAHA
  * delivers. We validate this first to read `event`/`session` so we can cleanly
  * IGNORE (ack with 200) the many non-message events WAHA fires (`session.status`,
- * `message.ack`, `presence.update`, …) instead of 400-rejecting them, which
- * would make WAHA retry. Permissive (`z.looseObject`) so extra fields pass.
+ * `message.ack`, `presence.update`, …) quietly, without the warn log a malformed
+ * `message` event earns. Permissive (`z.looseObject`) so extra fields pass.
  */
 export const WahaEnvelopeSchema = z.looseObject({
 	event: z.string().min(1),
@@ -296,7 +314,16 @@ export const DEFAULT_INBOUND_WEBHOOK_SOURCE = "whatsapp_inbound";
  * JSON acknowledgement payload.
  */
 export interface WebhookResult {
-	/** HTTP status: `401` (bad signature), `400` (malformed), or `200` (accepted/duplicate/ignored). */
+	/**
+	 * HTTP status: `401` (bad signature), `400` (body is not JSON), or `200`
+	 * (accepted / duplicate / ignored).
+	 *
+	 * Note what is NOT a 4xx (ADR-005): a well-formed WAHA delivery this system
+	 * cannot process — malformed payload, unresolvable `@lid`, invalid sender,
+	 * unowned session — is acknowledged with `200 "ignored"` and logged. WAHA
+	 * retries any non-2xx 15 times and then DISCARDS the event, so rejecting an
+	 * un-retryable delivery loses the message instead of surfacing the problem.
+	 */
 	status: 401 | 400 | 200;
 	/** JSON acknowledgement body. */
 	body: {
@@ -361,7 +388,8 @@ export function verifyWebhookSignature(
  *   1. **Verify** the HMAC signature over the raw body; on failure return `401`
  *      and process NOTHING (no parse, no persist, no enqueue).
  *   2. **Validate** the parsed body against {@link WahaMessageWebhookSchema};
- *      on failure return `400`. An outbound echo (`fromMe: true`) is routed to
+ *      on failure log the failing field paths and return `200 "ignored"`
+ *      (ADR-005). An outbound echo (`fromMe: true`) is routed to
  *      {@link handleOutboundEcho} here — it is ingested as outbound history and
  *      counted against the sending number's anti-ban cap rather than processed
  *      as inbound (beta WhatsApp-Web consultant-reply flow).
@@ -395,12 +423,21 @@ export async function processWahaWebhook(
 		};
 	}
 
-	// 2. Parse + validate the untrusted body (Req 7.1). A body that is not JSON,
-	//    or that does not match the `message` schema, is malformed → 400.
+	// 2. Parse + validate the untrusted body (Req 7.1). A body that is not JSON
+	//    at all → 400; one that parses but does not match the `message` schema →
+	//    logged 200 (ADR-005).
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(rawBody);
 	} catch {
+		// The one remaining 4xx besides the signature check (ADR-005). A body that
+		// is not even JSON did not come from WAHA's WebhookSender, so there is no
+		// retry storm to avoid and no message to lose — and a 400 is the honest
+		// answer to whatever misconfigured client is posting here.
+		logger.warn(
+			{ event: "inbound.invalid_json" },
+			"webhook body is not JSON; rejecting",
+		);
 		return {
 			status: 400,
 			body: { ok: false, status: "rejected", reason: "invalid_json" },
@@ -414,7 +451,9 @@ export async function processWahaWebhook(
 		//     WAHA legitimately fires many event types at this URL. ACK with 200
 		//     `"ignored"` so WAHA does not retry and the logs stay quiet.
 		//   - A genuinely malformed `message` event (right event, bad payload):
-		//     reject with 400 so the misconfiguration is visible.
+		//     ACK with 200 too, but LOG it (ADR-005) — the delivery is permanently
+		//     un-processable, so a retry cannot help, and a 4xx would only make
+		//     WAHA burn 15 redeliveries before discarding the message anyway.
 		const envelope = WahaEnvelopeSchema.safeParse(parsed);
 		if (
 			envelope.success &&
@@ -422,9 +461,21 @@ export async function processWahaWebhook(
 		) {
 			return { status: 200, body: { ok: true, status: "ignored" } };
 		}
+		// Log the failing FIELD PATHS only — never the values. The payload carries
+		// lead message text and phone numbers; the paths alone are what diagnose a
+		// WAHA schema drift (this is exactly how the GOWS `to: null` outage went
+		// unnoticed: the old code rejected silently).
+		logger.warn(
+			{
+				event: "inbound.invalid_body",
+				session: envelope.success ? envelope.data.session : undefined,
+				issues: result.error.issues.map((issue) => issue.path.join(".")),
+			},
+			"malformed message webhook payload; acknowledged and dropped",
+		);
 		return {
-			status: 400,
-			body: { ok: false, status: "rejected", reason: "invalid_body" },
+			status: 200,
+			body: { ok: true, status: "ignored", reason: "invalid_body" },
 		};
 	}
 	const { session, payload } = result.data;
@@ -465,19 +516,31 @@ export async function processWahaWebhook(
 	//    (`<digits>@lid`) that carries no phone digits. Resolve it to a real
 	//    phone-number chat id via the injected Lids resolver before normalizing;
 	//    an unresolvable `@lid` (sender unknown to the session) is unattributable.
-	//    A sender that cannot be normalized is malformed for attribution → 400.
+	//    A sender that cannot be normalized is unattributable → logged 200.
+	//
+	//    Both failures below are PERMANENT — WAHA has no mapping for the `@lid`, or
+	//    the sender is not a valid Brazilian number — so they are acknowledged with
+	//    200 and logged rather than rejected (ADR-005).
 	const senderChatId = await resolveChatId(deps, session, payload.from);
 	if (senderChatId === null) {
+		logger.warn(
+			{ event: "inbound.unresolved_lid", session, waMessageId },
+			"WAHA has no phone mapping for this @lid sender; dropping delivery",
+		);
 		return {
-			status: 400,
-			body: { ok: false, status: "rejected", reason: "unresolved_lid" },
+			status: 200,
+			body: { ok: true, status: "ignored", reason: "unresolved_lid" },
 		};
 	}
 	const phoneE164 = normalizePhone(senderChatId, "BR");
 	if (phoneE164 === null) {
+		logger.warn(
+			{ event: "inbound.invalid_sender", session, waMessageId },
+			"inbound sender is not a valid phone number; dropping delivery",
+		);
 		return {
-			status: 400,
-			body: { ok: false, status: "rejected", reason: "invalid_sender" },
+			status: 200,
+			body: { ok: true, status: "ignored", reason: "invalid_sender" },
 		};
 	}
 

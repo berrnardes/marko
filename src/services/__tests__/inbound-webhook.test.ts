@@ -267,3 +267,172 @@ describe("webhook tenant resolution", () => {
 		expect(withScope).not.toHaveBeenCalled(); // replaced above
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Real GOWS payloads (regression — ADR-005)
+// ---------------------------------------------------------------------------
+//
+// These fixtures are COPIED FROM A LIVE WAHA (2026.7.2, engine GOWS), not
+// hand-written. The bug they pin existed precisely because the fixtures above
+// were idealized: they always set `to` to a chat id, while GOWS sends
+// `"to": null` on every inbound message. `z.string().optional()` accepts
+// `undefined` but rejects a present `null`, so every real reply failed
+// `safeParse` and was answered `400 invalid_body` — WAHA retried 15 times and
+// discarded the message. No inbound was ever persisted or enqueued, so the lead
+// never left `IN_CADENCE`, no handoff fired, and the cadence kept sending.
+
+/** An inbound message shaped exactly as the GOWS engine delivers it. */
+function inboundBody(overrides: Record<string, unknown> = {}): string {
+	return JSON.stringify({
+		event: "message",
+		session: "default",
+		payload: {
+			id: "false_164789355544698@lid_6AD56CCE746613628E4D",
+			timestamp: 1_771_855_213,
+			from: "5547996334573@c.us",
+			fromMe: false,
+			source: "app",
+			body: "Oi, tenho interesse sim",
+			// The field that broke everything: GOWS sends null, not undefined.
+			to: null,
+			participant: null,
+			hasMedia: false,
+			media: null,
+			ack: null,
+			location: null,
+			vCards: null,
+			ackName: "UNKNOWN",
+			replyTo: null,
+			...overrides,
+		},
+	});
+}
+
+describe("webhook GOWS payload compatibility", () => {
+	it('accepts an inbound whose "to" is null (the reply-handoff regression)', async () => {
+		const { deps, append, findByWaMessageId } = buildDeps();
+		const enqueueInbound = vi.fn(async () => "job-1");
+		(deps as { queue: unknown }).queue = () => ({ enqueueInbound });
+		const body = inboundBody();
+
+		const result = await processWahaWebhook(deps, body, sign(body));
+
+		expect(result.status).toBe(200);
+		expect(result.body.status).toBe("accepted");
+		// Persisted as inbound history...
+		expect(findByWaMessageId).toHaveBeenCalledWith(
+			"false_164789355544698@lid_6AD56CCE746613628E4D",
+		);
+		expect(append).toHaveBeenCalledWith(
+			expect.objectContaining({
+				leadId: LEAD.id,
+				direction: "inbound",
+				content: "Oi, tenho interesse sim",
+			}),
+		);
+		// ...and handed to the worker, which is what runs the handoff pipeline.
+		expect(enqueueInbound).toHaveBeenCalledWith(
+			expect.objectContaining({ leadId: LEAD.id, text: "Oi, tenho interesse sim" }),
+		);
+	});
+
+	it('accepts a media-only inbound whose "body" is null, as empty content', async () => {
+		const { deps, append } = buildDeps();
+		const body = inboundBody({ body: null, hasMedia: true });
+
+		const result = await processWahaWebhook(deps, body, sign(body));
+
+		expect(result.body.status).toBe("accepted");
+		expect(append).toHaveBeenCalledWith(
+			expect.objectContaining({ direction: "inbound", content: "" }),
+		);
+	});
+
+	it("resolves a null-to inbound from a @lid sender end to end", async () => {
+		// The full captured shape: GOWS delivers BOTH a `@lid` sender and a null
+		// `to`. Neither may block attribution.
+		const { deps, append } = buildDeps();
+		(deps as { lids?: unknown }).lids = {
+			resolveLidToPhone: async () => "5547996334573@c.us",
+		};
+		const body = inboundBody({ from: "164789355544698@lid" });
+
+		const result = await processWahaWebhook(deps, body, sign(body));
+
+		expect(result.body.status).toBe("accepted");
+		expect(append).toHaveBeenCalledWith(
+			expect.objectContaining({ direction: "inbound" }),
+		);
+	});
+
+	it('ignores a fromMe echo whose "to" is null, without touching the tenant', async () => {
+		// A `fromMe` echo is attributed by `to`; normalizing null to undefined must
+		// still hit the `if (!recipient)` guard rather than attributing to nobody.
+		const { deps, append, withScope } = buildDeps();
+		const body = inboundBody({ fromMe: true, to: null });
+
+		const result = await processWahaWebhook(deps, body, sign(body));
+
+		expect(result.status).toBe(200);
+		expect(result.body.status).toBe("ignored");
+		expect(withScope).not.toHaveBeenCalled();
+		expect(append).not.toHaveBeenCalled();
+	});
+});
+
+describe("webhook un-processable deliveries are acknowledged, not rejected", () => {
+	// ADR-005: WAHA retries any non-2xx 15 times and then DISCARDS the event. For
+	// a permanently un-processable delivery that trades one dropped message for
+	// sixteen, so these are answered 200 + logged instead.
+
+	it("acknowledges a message event with a malformed payload", async () => {
+		const { deps, withScope } = buildDeps();
+		const body = inboundBody({ from: undefined });
+
+		const result = await processWahaWebhook(deps, body, sign(body));
+
+		expect(result.status).toBe(200);
+		expect(result.body.status).toBe("ignored");
+		expect(result.body.reason).toBe("invalid_body");
+		expect(withScope).not.toHaveBeenCalled();
+	});
+
+	it("acknowledges a sender that cannot be normalized to E.164", async () => {
+		const { deps, withScope } = buildDeps();
+		const body = inboundBody({ from: "123@c.us" });
+
+		const result = await processWahaWebhook(deps, body, sign(body));
+
+		expect(result.status).toBe(200);
+		expect(result.body.reason).toBe("invalid_sender");
+		expect(withScope).not.toHaveBeenCalled();
+	});
+
+	it("acknowledges a @lid sender WAHA has no mapping for", async () => {
+		const { deps, withScope } = buildDeps();
+		(deps as { lids?: unknown }).lids = {
+			resolveLidToPhone: async () => null,
+		};
+		const body = inboundBody({ from: "164789355544698@lid" });
+
+		const result = await processWahaWebhook(deps, body, sign(body));
+
+		expect(result.status).toBe(200);
+		expect(result.body.reason).toBe("unresolved_lid");
+		expect(withScope).not.toHaveBeenCalled();
+	});
+
+	it("still rejects a bad signature with 401, and a non-JSON body with 400", async () => {
+		// The two carve-outs: a signature failure is a real security rejection, and
+		// a non-JSON body did not come from WAHA's WebhookSender at all.
+		const { deps } = buildDeps();
+
+		const badSig = await processWahaWebhook(deps, inboundBody(), "deadbeef");
+		expect(badSig.status).toBe(401);
+		expect(badSig.body.reason).toBe("invalid_signature");
+
+		const notJson = await processWahaWebhook(deps, "<html>", sign("<html>"));
+		expect(notJson.status).toBe(400);
+		expect(notJson.body.reason).toBe("invalid_json");
+	});
+});
