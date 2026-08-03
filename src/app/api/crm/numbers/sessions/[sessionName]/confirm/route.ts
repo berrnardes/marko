@@ -13,6 +13,7 @@ import { requireOrgSession } from "@/app/api/crm/_lib/guard";
 import { toNumberView } from "@/app/api/crm/numbers/_view";
 import { DrizzleNumberRepository } from "@/db/number-repository";
 import { withOrg } from "@/db/with-org";
+import { logger } from "@/logger";
 import { msisdnFromMe, wahaAdmin } from "@/services/waha-admin-client";
 
 type Params = { params: Promise<{ sessionName: string }> };
@@ -29,7 +30,16 @@ export async function POST(
 	let info: Awaited<ReturnType<typeof wahaAdmin.getSession>>;
 	try {
 		info = await wahaAdmin.getSession(sessionName);
-	} catch {
+	} catch (err) {
+		logger.error(
+			{
+				event: "crm.session_confirm_read_failed",
+				sessionName,
+				wahaBaseUrl: wahaAdmin.configuredBaseUrl,
+				err,
+			},
+			"failed to read WAHA session while confirming",
+		);
 		return NextResponse.json(
 			{ error: "Failed to read WhatsApp session" },
 			{ status: 502 },

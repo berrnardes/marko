@@ -8,6 +8,7 @@ import { NextResponse } from "next/server";
 
 import { requireOrgSession } from "@/app/api/crm/_lib/guard";
 import type { SessionStatusView } from "@/app/crm/_lib/types";
+import { logger } from "@/logger";
 import { msisdnFromMe, wahaAdmin } from "@/services/waha-admin-client";
 
 type Params = { params: Promise<{ sessionName: string }> };
@@ -37,7 +38,16 @@ export async function GET(
 		}
 
 		return NextResponse.json(view);
-	} catch {
+	} catch (err) {
+		logger.error(
+			{
+				event: "crm.session_read_failed",
+				sessionName,
+				wahaBaseUrl: wahaAdmin.configuredBaseUrl,
+				err,
+			},
+			"failed to read WAHA session",
+		);
 		return NextResponse.json(
 			{ error: "Failed to read WhatsApp session" },
 			{ status: 502 },

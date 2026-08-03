@@ -94,7 +94,7 @@ export class HttpWahaAdminClient {
 	/** Create and start a session with the given name. Idempotent-ish: a WAHA
 	 * `422` (session already exists) is tolerated so a retried create is safe. */
 	async createSession(name: string): Promise<WahaSessionInfo> {
-		const res = await this.fetchImpl(`${this.baseUrl}/api/sessions`, {
+		const res = await this.fetchImpl(this.url("/api/sessions"), {
 			method: "POST",
 			headers: this.headers(),
 			body: JSON.stringify({ name, start: true }),
@@ -109,7 +109,7 @@ export class HttpWahaAdminClient {
 	/** Read a session's status and authenticated account. */
 	async getSession(name: string): Promise<WahaSessionInfo> {
 		const path = `/api/sessions/${encodeURIComponent(name)}`;
-		const res = await this.fetchImpl(`${this.baseUrl}${path}`, {
+		const res = await this.fetchImpl(this.url(path), {
 			method: "GET",
 			headers: this.headers(),
 		});
@@ -139,7 +139,7 @@ export class HttpWahaAdminClient {
 	 */
 	async getQrDataUrl(name: string): Promise<string | null> {
 		const path = `/api/${encodeURIComponent(name)}/auth/qr`;
-		const res = await this.fetchImpl(`${this.baseUrl}${path}`, {
+		const res = await this.fetchImpl(this.url(path), {
 			method: "GET",
 			headers: this.headers(),
 		});
@@ -168,7 +168,7 @@ export class HttpWahaAdminClient {
 	async logoutAndDelete(name: string): Promise<void> {
 		const encoded = encodeURIComponent(name);
 		try {
-			await this.fetchImpl(`${this.baseUrl}/api/sessions/${encoded}/logout`, {
+			await this.fetchImpl(this.url(`/api/sessions/${encoded}/logout`), {
 				method: "POST",
 				headers: this.headers(),
 			});
@@ -176,13 +176,36 @@ export class HttpWahaAdminClient {
 			// ignore — proceed to delete regardless.
 		}
 		try {
-			await this.fetchImpl(`${this.baseUrl}/api/sessions/${encoded}`, {
+			await this.fetchImpl(this.url(`/api/sessions/${encoded}`), {
 				method: "DELETE",
 				headers: this.headers(),
 			});
 		} catch {
 			// ignore — teardown is best-effort.
 		}
+	}
+
+	/**
+	 * The configured base URL, for diagnostics. Safe to log: it carries no
+	 * credential (the API key travels in a header).
+	 */
+	get configuredBaseUrl(): string {
+		return this.baseUrl;
+	}
+
+	/**
+	 * Absolute URL for a WAHA path. An empty base means `WAHA_BASE_URL` was never
+	 * set in this environment — a deployment mistake that otherwise surfaces as
+	 * `fetch` failing to parse a relative URL, which reads like a network fault
+	 * and sends whoever debugs it to the WAHA logs, where nothing ever arrived.
+	 */
+	private url(path: string): string {
+		if (this.baseUrl === "") {
+			throw new WahaError(
+				"WAHA base URL is not configured: set WAHA_BASE_URL (e.g. https://waha.markohome.com.br)",
+			);
+		}
+		return `${this.baseUrl}${path}`;
 	}
 
 	/** Build request headers, including the optional API key. */
